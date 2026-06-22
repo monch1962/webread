@@ -114,3 +114,78 @@ fn test_readable() {
         "readable should not contain HTML tags"
     );
 }
+
+#[test]
+fn test_get_json() {
+    let output = Command::new(webread_binary())
+        .args(["get", "https://example.com", "--json"])
+        .output()
+        .expect("failed to run webread get --json");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.status.success(),
+        "webread get --json failed: {stdout}"
+    );
+    // Should be valid JSON
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("output should be valid JSON");
+    assert!(
+        parsed.get("url").is_some(),
+        "JSON should contain 'url' field"
+    );
+    assert!(
+        parsed.get("text").is_some(),
+        "JSON should contain 'text' field"
+    );
+    let text = parsed["text"].as_str().unwrap_or("");
+    assert!(
+        text.contains("Example Domain"),
+        "JSON text should contain content"
+    );
+}
+
+#[test]
+fn test_links_json() {
+    let output = Command::new(webread_binary())
+        .args(["links", "https://example.com", "--json"])
+        .output()
+        .expect("failed to run webread links --json");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.status.success(),
+        "webread links --json failed: {stdout}"
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("output should be valid JSON");
+    assert!(
+        parsed.get("url").is_some(),
+        "JSON should contain 'url' field"
+    );
+    assert!(
+        parsed.get("links").is_some(),
+        "JSON should contain 'links' array"
+    );
+}
+
+#[test]
+fn test_search_json() {
+    let output = Command::new(webread_binary())
+        .args(["search", "rust programming", "--json"])
+        .output()
+        .expect("failed to run webread search --json");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.status.success(),
+        "webread search --json failed: {stdout}"
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("output should be valid JSON");
+    assert!(
+        parsed.get("query").is_some(),
+        "JSON should contain 'query' field"
+    );
+    assert!(
+        parsed.get("results").is_some(),
+        "JSON should contain 'results' array"
+    );
+}
