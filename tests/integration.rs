@@ -220,6 +220,52 @@ fn test_json_html_structure() {
     );
 }
 
+// --- Batch test URL validation ---
+
+#[test]
+fn test_batch_url_list_valid() {
+    // Validate the URL list used by batch_test.py: no duplicates,
+    // all parseable, minimum count
+    let script = std::fs::read_to_string("tests/batch_test.py").expect("batch_test.py must exist");
+
+    // Extract all URLs from the URLS list in batch_test.py
+    let mut urls: Vec<&str> = Vec::new();
+    for line in script.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('"') && trimmed.contains("http") {
+            // Extract the URL string
+            if let Some(start) = trimmed.find('"') {
+                if let Some(end) = trimmed[start + 1..].find('"') {
+                    let url = &trimmed[start + 1..start + 1 + end];
+                    if url.starts_with("http") {
+                        urls.push(url);
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        urls.len() >= 300,
+        "should have 300+ test URLs, got {}",
+        urls.len()
+    );
+
+    // Check for duplicates
+    let mut seen = std::collections::HashSet::new();
+    for url in &urls {
+        assert!(seen.insert(url), "duplicate URL in batch list: {url}");
+    }
+
+    // Check all URLs parse
+    for url in &urls {
+        assert!(
+            url::Url::parse(url).is_ok(),
+            "invalid URL in batch list: {url}"
+        );
+    }
+}
+
 // --- Parallel execution stress tests ---
 
 #[test]

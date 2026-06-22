@@ -1,6 +1,6 @@
 # webread
 
-A single static binary (~2.6 MB) for web content extraction from the CLI.
+A single static binary (~2.7 MB) for web content extraction from the CLI.
 No browser engine, no JavaScript runtime, no display server.
 
 ## Usage
@@ -60,7 +60,7 @@ tests/
 - **HTML parsing:** `scraper` (html5ever + CSS selectors)
 - **Search:** DuckDuckGo Lite API (no API key needed)
 - **Output:** text by default, `--json` for structured output
-- **Binary:** 2.6 MB (LTO, opt-level=z, panic=abort, stripped)
+- **Binary:** 2.7 MB (LTO, opt-level=z, panic=abort, stripped)
 
 ## Readability Algorithm
 
@@ -126,3 +126,10 @@ Acceptable for documentation, articles, and typical web pages.
 | Bot detection bypass | ~85% | ~99% |
 | JSON output | Native | Requires scripting |
 | Offline | Yes | No |
+
+## Hermes Agent Integration
+
+See [HERMES.md](HERMES.md) for detailed instructions on configuring webread
+as a lightweight replacement for `browser_navigate`/`browser_snapshot`
+in Hermes Agent. Includes tool definitions, prompt patterns, and
+performance benchmarks.
