@@ -1,0 +1,9 @@
+# Only the binary matters — keep the scratch image tiny
+target/
+.git/
+.github/
+tests/
+*.md
+docs/
+Dockerfile
+.dockerignore
