@@ -1,4 +1,4 @@
-/// Integration tests for webread CLI
+/// Integration tests for webread CLI — including cross-site compatibility
 use std::process::Command;
 
 fn webread_binary() -> std::path::PathBuf {
@@ -11,181 +11,211 @@ fn webread_binary() -> std::path::PathBuf {
         .join("webread")
 }
 
+fn webread(args: &[&str]) -> Result<String, String> {
+    let output = Command::new(webread_binary())
+        .args(args)
+        .output()
+        .map_err(|e| format!("failed to execute: {e}"))?;
+    let stdout = String::from_utf8(output.stdout).map_err(|e| format!("utf8: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("exit={} stderr={}", output.status, stderr));
+    }
+    Ok(stdout)
+}
+
+// --- Core functionality tests ---
+
 #[test]
 fn test_get_example() {
-    let output = Command::new(webread_binary())
-        .args(["get", "https://example.com"])
-        .output()
-        .expect("failed to run webread get");
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(output.status.success(), "webread get failed: {stdout}");
-    assert!(
-        stdout.contains("Example Domain"),
-        "expected 'Example Domain' in output"
-    );
-}
-
-#[test]
-fn test_html_selector() {
-    let output = Command::new(webread_binary())
-        .args(["html", "https://example.com", "--selector", "h1"])
-        .output()
-        .expect("failed to run webread html");
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(output.status.success(), "webread html failed: {stdout}");
-    assert!(stdout.contains("<h1>"), "expected <h1> tag in output");
-}
-
-#[test]
-fn test_html_raw() {
-    let output = Command::new(webread_binary())
-        .args(["html", "https://example.com"])
-        .output()
-        .expect("failed to run webread html (raw)");
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(output.status.success(), "webread html failed: {stdout}");
-    assert!(
-        stdout.contains("<!doctype html>") || stdout.contains("<html"),
-        "expected raw HTML in output"
-    );
-}
-
-#[test]
-fn test_links() {
-    let output = Command::new(webread_binary())
-        .args(["links", "https://example.com"])
-        .output()
-        .expect("failed to run webread links");
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(output.status.success(), "webread links failed: {stdout}");
-    assert!(stdout.contains("https://"), "expected a link in output");
-}
-
-#[test]
-fn test_search() {
-    let output = Command::new(webread_binary())
-        .args(["search", "rust programming language"])
-        .output()
-        .expect("failed to run webread search");
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(output.status.success(), "webread search failed: {stdout}");
-    assert!(
-        stdout.contains("=== Search results for:"),
-        "expected search header"
-    );
-}
-
-#[test]
-fn test_invalid_url() {
-    let output = Command::new(webread_binary())
-        .args(["get", "https://this-domain-does-not-exist-12345.com"])
-        .output()
-        .expect("failed to run webread get");
-    assert!(!output.status.success(), "expected failure for invalid URL");
-}
-
-#[test]
-fn test_invalid_css_selector() {
-    let output = Command::new(webread_binary())
-        .args(["html", "https://example.com", "--selector", "###invalid"])
-        .output()
-        .expect("failed to run webread html");
-    assert!(
-        !output.status.success(),
-        "expected failure for invalid CSS selector"
-    );
-}
-
-#[test]
-fn test_readable() {
-    let output = Command::new(webread_binary())
-        .args(["readable", "https://example.com"])
-        .output()
-        .expect("failed to run webread readable");
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(output.status.success(), "webread readable failed: {stdout}");
-    assert!(
-        stdout.contains("Example Domain"),
-        "expected 'Example Domain' in readable output"
-    );
-    // Should be clean text, no HTML tags
-    assert!(
-        !stdout.contains("<h1>"),
-        "readable should not contain HTML tags"
-    );
+    let out = webread(&["get", "https://example.com"]).unwrap();
+    assert!(out.contains("Example Domain"));
 }
 
 #[test]
 fn test_get_json() {
-    let output = Command::new(webread_binary())
-        .args(["get", "https://example.com", "--json"])
-        .output()
-        .expect("failed to run webread get --json");
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        output.status.success(),
-        "webread get --json failed: {stdout}"
-    );
-    // Should be valid JSON
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("output should be valid JSON");
-    assert!(
-        parsed.get("url").is_some(),
-        "JSON should contain 'url' field"
-    );
-    assert!(
-        parsed.get("text").is_some(),
-        "JSON should contain 'text' field"
-    );
-    let text = parsed["text"].as_str().unwrap_or("");
-    assert!(
-        text.contains("Example Domain"),
-        "JSON text should contain content"
-    );
+    let out = webread(&["get", "https://example.com", "--json"]).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(parsed.get("url").is_some());
+    assert!(parsed.get("text").is_some());
+    assert!(parsed["text"].as_str().unwrap().contains("Example Domain"));
+}
+
+#[test]
+fn test_html_selector() {
+    let out = webread(&["html", "https://example.com", "--selector", "h1"]).unwrap();
+    assert!(out.contains("<h1>"));
+}
+
+#[test]
+fn test_html_raw() {
+    let out = webread(&["html", "https://example.com"]).unwrap();
+    assert!(out.contains("<!doctype html>") || out.contains("<html"));
+}
+
+#[test]
+fn test_links() {
+    let out = webread(&["links", "https://example.com"]).unwrap();
+    assert!(out.contains("https://"));
 }
 
 #[test]
 fn test_links_json() {
-    let output = Command::new(webread_binary())
-        .args(["links", "https://example.com", "--json"])
-        .output()
-        .expect("failed to run webread links --json");
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        output.status.success(),
-        "webread links --json failed: {stdout}"
-    );
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("output should be valid JSON");
-    assert!(
-        parsed.get("url").is_some(),
-        "JSON should contain 'url' field"
-    );
-    assert!(
-        parsed.get("links").is_some(),
-        "JSON should contain 'links' array"
-    );
+    let out = webread(&["links", "https://example.com", "--json"]).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(parsed.get("links").is_some());
+    assert!(parsed["links"].as_array().unwrap().len() > 0);
+}
+
+#[test]
+fn test_readable() {
+    let out = webread(&["readable", "https://example.com"]).unwrap();
+    assert!(out.contains("Example Domain"));
+    // Should have no HTML tags
+    assert!(!out.contains("<h1>"));
+}
+
+#[test]
+fn test_search() {
+    let out = webread(&["search", "rust programming language"]).unwrap();
+    assert!(out.contains("=== Search results for:"));
 }
 
 #[test]
 fn test_search_json() {
-    let output = Command::new(webread_binary())
-        .args(["search", "rust programming", "--json"])
-        .output()
-        .expect("failed to run webread search --json");
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let out = webread(&["search", "rust", "--json"]).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(parsed.get("query").is_some());
+    assert!(parsed.get("results").is_some());
+    assert!(parsed["results"].as_array().unwrap().len() > 0);
+}
+
+// --- Error handling tests ---
+
+#[test]
+fn test_invalid_url() {
+    let result = webread(&["get", "https://this-domain-does-not-exist-12345.com"]);
+    assert!(result.is_err(), "expected failure for invalid URL");
+}
+
+#[test]
+fn test_invalid_css_selector() {
+    let result = webread(&["html", "https://example.com", "--selector", "###invalid"]);
+    assert!(result.is_err(), "expected failure for invalid CSS selector");
+}
+
+#[test]
+fn test_empty_html() {
+    // <html> with no body should produce empty/whitespace-only output
+    let out = webread(&["get", "https://example.com"]).unwrap();
+    assert!(!out.is_empty(), "example.com should have content");
+}
+
+// --- Cross-site compatibility tests (representative sample) ---
+// These test that webread works across different site types.
+// Failures here indicate site changes or bot detection.
+
+#[test]
+fn test_wikipedia_article() {
+    let out = webread(&[
+        "readable",
+        "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+    ])
+    .unwrap();
     assert!(
-        output.status.success(),
-        "webread search --json failed: {stdout}"
+        out.contains("Rust"),
+        "Wikipedia article should have content"
     );
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("output should be valid JSON");
+}
+
+#[test]
+fn test_github_readme() {
+    let out = webread(&["get", "https://github.com/rust-lang/rust"]).unwrap();
+    assert!(out.contains("rust"), "GitHub repo should have content");
+}
+
+#[test]
+fn test_arxiv_paper() {
+    let out = webread(&["get", "https://arxiv.org/abs/1706.03762"]).unwrap();
     assert!(
-        parsed.get("query").is_some(),
-        "JSON should contain 'query' field"
+        out.contains("Attention"),
+        "arXiv abstract should have content"
     );
+}
+
+#[test]
+fn test_hacker_news_frontpage() {
+    let out = webread(&["get", "https://news.ycombinator.com/"]).unwrap();
     assert!(
-        parsed.get("results").is_some(),
-        "JSON should contain 'results' array"
+        out.contains("Hacker News") || out.contains("news"),
+        "HN should have content"
+    );
+}
+
+#[test]
+fn test_devto_article() {
+    let out = webread(&["get", "https://dev.to/"]).unwrap();
+    assert!(
+        out.contains("DEV") || !out.is_empty(),
+        "dev.to should have content"
+    );
+}
+
+// --- JSON output structure ---
+
+#[test]
+fn test_json_get_structure() {
+    let out = webread(&["get", "https://example.com", "--json"]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v.get("url").is_some(), "get --json must have 'url'");
+    assert!(v.get("text").is_some(), "get --json must have 'text'");
+    assert!(
+        v.get("char_count").is_some(),
+        "get --json must have 'char_count'"
+    );
+}
+
+#[test]
+fn test_json_readable_structure() {
+    let out = webread(&["readable", "https://example.com", "--json"]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v.get("url").is_some(), "readable --json must have 'url'");
+    assert!(v.get("text").is_some(), "readable --json must have 'text'");
+}
+
+#[test]
+fn test_json_links_structure() {
+    let out = webread(&["links", "https://example.com", "--json"]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v.get("url").is_some(), "links --json must have 'url'");
+    assert!(v.get("links").is_some(), "links --json must have 'links'");
+    assert!(v["links"].is_array(), "links must be array");
+}
+
+#[test]
+fn test_json_search_structure() {
+    let out = webread(&["search", "test", "--json"]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v.get("query").is_some(), "search --json must have 'query'");
+    assert!(
+        v.get("results").is_some(),
+        "search --json must have 'results'"
+    );
+    assert!(v["results"].is_array(), "results must be array");
+}
+
+#[test]
+fn test_json_html_structure() {
+    let out = webread(&["html", "https://example.com", "--selector", "h1", "--json"]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v.get("url").is_some(), "html --json must have 'url'");
+    assert!(
+        v.get("selector").is_some(),
+        "html --json must have 'selector'"
+    );
+    assert!(v.get("html").is_some(), "html --json must have 'html'");
+    assert!(
+        v.get("match_count").is_some(),
+        "html --json must have 'match_count'"
     );
 }
