@@ -136,12 +136,71 @@ pub fn fetch_url_with(url: &str, opts: &FetchOptions) -> anyhow::Result<FetchRes
 
 /// Resolve a potentially relative URL against a base URL.
 /// If `href` is already absolute, returns it unchanged.
+/// Handles: root-relative (/x), relative (x), protocol-relative (//x),
+/// up-level (../x), fragments (#x), and query (?x) references.
 pub fn resolve_url(base: &str, href: &str) -> String {
-    url::Url::parse(base)
-        .ok()
-        .and_then(|u| u.join(href).ok())
-        .map(|u| u.to_string())
-        .unwrap_or_else(|| href.to_string())
+    // Already absolute (has scheme)
+    if href.contains("://") {
+        return href.to_string();
+    }
+
+    // Protocol-relative: "//host/path"
+    if let Some(suffix) = href.strip_prefix("//") {
+        if let Some(pos) = base.find("://") {
+            let scheme = &base[..pos + 3];
+            return format!("{scheme}{suffix}");
+        }
+        return href.to_string();
+    }
+
+    // Fragment or query: append to base (stripping base's fragment/query)
+    if href.starts_with('#') || href.starts_with('?') {
+        let clean = base
+            .split('#')
+            .next()
+            .unwrap_or(base)
+            .split('?')
+            .next()
+            .unwrap_or(base);
+        return format!("{clean}{href}");
+    }
+
+    // Extract scheme and authority (host + optional port) from base
+    let (scheme, rest) = match base.find("://") {
+        Some(pos) => (&base[..pos], &base[pos + 3..]),
+        None => return href.to_string(), // invalid base
+    };
+
+    // Find authority end (end of host:port part = first '/' after scheme://)
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    let base_path = &rest[authority_end..]; // includes leading '/'
+
+    // Root-relative: replace path
+    if href.starts_with('/') {
+        return format!("{scheme}://{authority}{href}");
+    }
+
+    // Relative path: compute resolved path from base directory
+    let base_dir = match base_path.rfind('/') {
+        Some(pos) => &base_path[..=pos],
+        None => "/",
+    };
+
+    // Normalize the combined path
+    let combined = format!("{base_dir}{href}");
+    let mut parts: Vec<&str> = Vec::new();
+    for segment in combined.split('/') {
+        match segment {
+            "." | "" => continue,
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+
+    format!("{scheme}://{authority}/{}", parts.join("/"))
 }
 
 #[cfg(test)]
@@ -196,6 +255,30 @@ mod guardrail_tests {
         // If base URL is invalid, just return the href as-is
         let resolved = resolve_url("not-a-url", "https://example.com/");
         assert_eq!(resolved, "https://example.com/");
+    }
+
+    #[test]
+    fn test_resolve_up_level() {
+        let resolved = resolve_url("https://example.com/a/b/page", "../other");
+        assert_eq!(resolved, "https://example.com/a/other");
+    }
+
+    #[test]
+    fn test_resolve_protocol_relative() {
+        let resolved = resolve_url("https://example.com/", "//other.com/path");
+        assert_eq!(resolved, "https://other.com/path");
+    }
+
+    #[test]
+    fn test_resolve_deep_relative() {
+        let resolved = resolve_url("https://example.com/a/b/c/", "../../d/e");
+        assert_eq!(resolved, "https://example.com/a/d/e");
+    }
+
+    #[test]
+    fn test_resolve_with_port() {
+        let resolved = resolve_url("https://example.com:8080/path", "/other");
+        assert_eq!(resolved, "https://example.com:8080/other");
     }
 
     // --- fetch_url_with error handling ---
