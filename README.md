@@ -24,7 +24,7 @@ webread get https://example.com
 # Search the web
 webread search "rust programming language"
 
-# Extract article content (strips nav, headers, footers, sidebars)
+# Extract article content (scoring-based readability algorithm)
 webread readable 'https://en.wikipedia.org/wiki/Rust_(programming_language)'
 
 # Filter HTML by CSS selector
@@ -43,16 +43,16 @@ webread search "rust" --json | jq '.results[] | {title, url}'
 cargo build --release
 ```
 
-Binary at `target/release/webread` (~2.6 MB stripped, no additional tools needed).
+Binary at `target/release/webread` (~2.6 MB stripped, no dependencies).
 
 ## Architecture
 
 ```
 src/
-├── lib.rs      # Core logic: fetch_url, html_to_text, extract_readable_content, decode_search_url
+├── lib.rs      # Core logic: fetch, extract, score, search, decode
 └── main.rs     # CLI entry point with clap subcommands
 tests/
-├── integration.rs  # 22 integration tests (smoke + cross-site + JSON structure)
+├── integration.rs  # 22 integration tests (smoke + cross-site + JSON)
 └── batch_test.py   # Batch test across 130+ websites
 ```
 
@@ -60,17 +60,31 @@ tests/
 - **HTML parsing:** `scraper` (html5ever + CSS selectors)
 - **Search:** DuckDuckGo Lite API (no API key needed)
 - **Output:** text by default, `--json` for structured output
-- **Binary:** 2.6 MB (LTO, opt-level=z, stripped, no unwind tables)
+- **Binary:** 2.6 MB (LTO, opt-level=z, panic=abort, stripped)
+
+## Readability Algorithm
+
+`webread readable` implements a simplified Mozilla Readability algorithm:
+
+1. **Score candidates** by paragraph count and text density
+2. **Prefer semantic tags** (`<article>`, `<main>`, `[role=main]`) with 1.3-1.5x bonus
+3. **Recognize content classes** like `post-content`, `article-body`, `entry`
+4. **Skip non-content classes** like `sidebar`, `comment`, `widget`, `footer`
+5. **Strip known non-content elements** (`<nav>`, `<header>`, `<footer>`, `<aside>`, `<script>`, `<style>`)
+6. **Fall back** to `<body>` with tag stripping, then to raw text
+
+This handles sites without semantic HTML tags (e.g., `<div class="post-content">`),
+selects the most paragraph-rich region, and excludes sidebars and navigation.
 
 ## Test Suite
 
 ```
-cargo test        # 30 tests (18 unit + 22 integration)
+cargo test        # 43 tests (21 unit + 22 integration)
 cargo clippy      # Zero warnings
 ```
 
-Cross-site tests validate webread against real websites: Wikipedia, GitHub,
-arXiv, Hacker News, dev.to, and example.com.
+Cross-site integration tests validate against real websites:
+Wikipedia, GitHub, arXiv, Hacker News, dev.to, example.com.
 
 For the full 130+ site batch test:
 ```bash
@@ -80,36 +94,33 @@ python3 tests/batch_test.py
 ## Known Limitations
 
 ### Sites that require JavaScript
-webread fetches raw HTML only — it does not execute JavaScript. The following
-types of sites will produce empty or minimal output:
-
+webread fetches raw HTML only — no JavaScript execution:
 - **Single-Page Applications** (Reddit, Quora, Medium)
-- **Sites behind Cloudflare JS challenges** (Stack Overflow, Server Fault, Super User)
+- **Cloudflare JS challenge sites** (Stack Overflow, Server Fault)
 
 ### Sites with paywalls or login walls
-Sites that require authentication or subscription return HTTP 401/403:
-
-- WSJ, Reuters, The Economist, Britannica (paywalls)
-- Some academic publishers (ACM, IEEE — some content accessible)
+- WSJ, Reuters, The Economist, Britannica (HTTP 401/403)
+- Some academic publishers (ACM, IEEE)
 
 ### Bot-protected sites
-Some sites aggressively block non-browser HTTP clients regardless of
-User-Agent. webread sends a Safari User-Agent by default, which is accepted
-by the majority of sites.
+webread sends a Safari User-Agent. ~85% of sites accept this.
+The remaining ~15% use bot protection (Cloudflare, DataDome) or
+require authentication. See `tests/batch_test.py` for the full breakdown.
 
-### Large pages
-Very large pages (100KB+) are fetched entirely into memory before processing.
-This is acceptable for most documentation and article pages.
+### Memory
+Very large pages (100KB+) are loaded entirely into memory.
+Acceptable for documentation, articles, and typical web pages.
 
-## Comparison with Chrome-based tools
+## Comparison with Chrome-based Tools
 
 | Feature | webread | Chrome (browser_navigate) |
 |---------|---------|--------------------------|
-| Binary size | 2.6 MB | 200+ MB (browser engine) |
-| RAM usage | ~5-10 MB | 200-500 MB+ |
+| Binary size | 2.6 MB | 200+ MB |
+| RAM usage | ~5-10 MB | 200-500 MB |
 | Start time | ~5 ms | 1-5 seconds |
 | JS execution | No | Yes |
 | SPA support | Limited | Full |
-| Bot detection bypass | ~85% of sites | ~99% of sites |
-| Offline | Yes | No |
+| Readability | Scoring-based | Mozilla Readability |
+| Bot detection bypass | ~85% | ~99% |
 | JSON output | Native | Requires scripting |
+| Offline | Yes | No |
