@@ -1,1 +1,25 @@
-/target
+# Rust build artifacts
+/target/
+
+# IDEs and editors
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+.vs/
+
+# OS files
+.DS_Store
+Thumbs.db
+*.bak
+
+# Coverage results
+*.profraw
+*.gcov
+lcov.info
+coverage/
+
+# Temporary test output
+target/batch-test-report.json

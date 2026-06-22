@@ -9,11 +9,14 @@ static binary.
 
 | Factor | browser_navigate + browser_snapshot | webread |
 |--------|--------------------------------------|---------|
-| Binary size | 200+ MB (Chromium) | 2.6 MB |
-| RAM per call | 200-500 MB | 5-10 MB |
-| Startup time | 1-5 seconds | ~5 ms |
-| Dependencies | Chromium, display server | None (static binary) |
-| JSON output | Post-processing needed | Native `--json` flag |
+| Binary size | 200+ MB (Chromium) | **2.7 MB** |
+| RAM per call | 200-500 MB | **5-10 MB** |
+| Startup time | 1-5 seconds | **~5 ms** |
+| Dependencies | Chromium, display server, GPU libs | **None (static binary)** |
+| JSON output | Post-processing needed | **Native `--json` flag** |
+| Body size control | None | **`--max-size` flag** |
+| Timeout control | Configurable | **`--timeout` flag** |
+| Config file | Browser preferences | **`~/.config/webread/config`** |
 | JS execution | Full | None (intentional) |
 
 ## When to use webread vs browser
@@ -36,18 +39,25 @@ static binary.
 
 ## Installing webread in Hermes
 
-### Option 1: Installed system-wide
+### Option 1: Installed system-wide (recommended)
 
 ```bash
 # Build from source
 cd ~/Projects/webread
 cargo build --release
-strip target/release/webread
 sudo cp target/release/webread /usr/local/bin/webread
 
 # Verify
 webread --help
 webread get https://example.com --json
+
+# Optional: create config file
+mkdir -p ~/.config/webread
+cat > ~/.config/webread/config << 'EOF'
+# Resource limits for constrained systems
+timeout=15
+max-size=5000000
+EOF
 ```
 
 ### Option 2: Use directly from the build directory
@@ -81,13 +91,13 @@ tools:
     description: Fetch a URL and return clean text.
   webread_readable:
     command: webread readable {{url}}
-    description: Extract article content from a URL.
+    description: Extract article content from a URL (scoring-based readability).
   webread_search:
     command: webread search {{query}} --json
     description: Search the web and return JSON results.
   webread_links:
     command: webread links {{url}}
-    description: Enumerate all links on a page.
+    description: Enumerate all links on a page (resolved to absolute URLs).
   webread_html:
     command: webread html {{url}} --selector {{selector}}
     description: Fetch HTML filtered by CSS selector.
@@ -122,6 +132,12 @@ To search the web: webread search "query" --json
 Returns: {"query": "...", "results": [{"title":"...", "url":"...", "snippet":"..."}]}
 ```
 
+### Safe fetching on constrained systems
+```
+To fetch with resource limits: webread get <url> --timeout 15 --max-size 1000000
+Prevents hanging on slow sites and OOM on giant pages.
+```
+
 ### Extract specific elements
 ```
 To get all links: webread links <url>
@@ -133,32 +149,34 @@ To get links as JSON: webread links <url> --json
 
 Timings on a single page fetch:
 
-| Tool | Memory | Time | Binary size |
-|------|--------|------|-------------|
-| `curl` | ~2 MB | ~0.5s | 0.1 MB |
-| `webread get` | ~5 MB | ~0.8s | 2.6 MB |
-| `webread readable` | ~8 MB | ~0.9s | 2.6 MB |
-| `browser_navigate` | ~250 MB | ~3s | 200+ MB |
+| Tool | Memory | Time | Binary size | Dependencies |
+|------|--------|------|-------------|--------------|
+| `curl` | ~2 MB | ~0.5s | 0.1 MB | None |
+| `webread get` | ~5 MB | ~0.8s | **2.7 MB** | **None (static)** |
+| `webread readable` | ~8 MB | ~0.9s | 2.7 MB | None (static) |
+| `browser_navigate` | ~250 MB | ~3s | 200+ MB | Chromium, display server |
 
-webread sits between curl and a full browser — it adds HTML parsing and
-content extraction but still starts in milliseconds.
+webread sits between curl and a full browser — it adds HTML parsing,
+CSS selector filtering, content scoring, and JSON output but still starts
+in milliseconds and uses minimal RAM.
 
 ## Testing webread in Hermes
 
 ```bash
-# Smoke test: fetch a known URL
+# Smoke test
 webread get https://example.com
 
-# Full test suite
+# Full test suite (66 tests)
 cd ~/Projects/webread && cargo test
 
-# Batch test across 302 websites
+# Batch test across 302 websites (parallel, ~2 minutes)
 python3 tests/batch_test.py
 ```
 
 ## Known Limitations
 
-- No JavaScript execution — SPAs and JS-rendered sites won't work
-- Some sites block non-browser HTTP clients (Cloudflare, etc.) — ~15% failure rate
-- Paywalled sites return 401/403
-- Very large pages (>1 MB) loaded entirely into memory
+- **No JavaScript execution** — SPAs and JS-rendered sites won't work
+- **Bot protection** — ~15% of sites block non-browser HTTP clients (Cloudflare, etc.)
+- **Paywalls** — WSJ, Reuters, Economist, etc. return 401/403
+- **Memory limit** — `--max-size` (default 10 MB) bounds RAM per request; giant pages are truncated
+- **Timeout** — `--timeout` (default 30s) prevents hanging; slow sites return early
