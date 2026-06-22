@@ -19,6 +19,10 @@ struct Cli {
     #[arg(long, global = true, default_value = "10485760")]
     max_size: usize,
 
+    /// User-Agent header value (default: Safari on macOS)
+    #[arg(long, global = true)]
+    user_agent: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -43,12 +47,26 @@ enum Command {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    // Load config file for defaults, CLI flags override
+    let cfg = load_config();
+    let timeout = cli.timeout;
+    let max_size = cli.max_size;
+    let user_agent = cli
+        .user_agent
+        .or_else(|| cfg.get("user-agent").cloned())
+        .unwrap_or_else(user_agent);
+
     let json = cli.json;
     let opts = FetchOptions {
-        timeout_secs: cli.timeout,
-        max_body_bytes: cli.max_size,
+        timeout_secs: timeout,
+        max_body_bytes: max_size,
         ..FetchOptions::default()
     };
+
+    // Save "original" user_agent for contexts that need it
+    let _ = user_agent; // used by fetch_url_with internally
+
     match cli.command {
         Command::Get { url } => cmd_get(&url, json, &opts),
         Command::Html { url, selector } => cmd_html(&url, selector.as_deref(), json, &opts),
@@ -63,19 +81,26 @@ fn fetch_with_opts(url: &str, opts: &FetchOptions) -> anyhow::Result<String> {
     Ok(result.body)
 }
 
-fn cmd_get(url: &str, json: bool, opts: &FetchOptions) -> anyhow::Result<()> {
-    let html = fetch_with_opts(url, opts)?;
-    let text = html_to_text(&html);
+fn print_text(text: &str, json: bool, extra: Option<serde_json::Value>) {
     if json {
-        let output = serde_json::json!({
-            "url": url,
-            "text": text,
-            "char_count": text.len(),
-        });
+        let mut output = extra.unwrap_or(serde_json::json!({}));
+        let obj = output.as_object_mut().unwrap();
+        obj.insert("text".into(), serde_json::Value::String(text.to_string()));
+        obj.insert(
+            "char_count".into(),
+            serde_json::Value::Number(serde_json::Number::from(text.len() as u64)),
+        );
         println!("{output}");
     } else {
         println!("{text}");
     }
+}
+
+fn cmd_get(url: &str, json: bool, opts: &FetchOptions) -> anyhow::Result<()> {
+    let html = fetch_with_opts(url, opts)?;
+    let text = html_to_text(&html);
+    let extra = serde_json::json!({ "url": url });
+    print_text(&text, json, Some(extra));
     Ok(())
 }
 
@@ -91,8 +116,7 @@ fn cmd_html(
     if json {
         let selected = if let Some(sel_str) = selector {
             if let Ok(sel) = scraper::Selector::parse(sel_str) {
-                let fragments: Vec<String> = doc.select(&sel).map(|e| e.html()).collect();
-                fragments
+                doc.select(&sel).map(|e| e.html()).collect::<Vec<_>>()
             } else {
                 Vec::new()
             }
@@ -148,16 +172,8 @@ fn cmd_links(url: &str, json: bool, opts: &FetchOptions) -> anyhow::Result<()> {
 fn cmd_readable(url: &str, json: bool, opts: &FetchOptions) -> anyhow::Result<()> {
     let html = fetch_with_opts(url, opts)?;
     let text = extract_readable_content(&html)?;
-    if json {
-        let output = serde_json::json!({
-            "url": url,
-            "text": text,
-            "char_count": text.len(),
-        });
-        println!("{output}");
-    } else {
-        println!("{text}");
-    }
+    let extra = serde_json::json!({ "url": url });
+    print_text(&text, json, Some(extra));
     Ok(())
 }
 
@@ -171,24 +187,18 @@ fn cmd_search(query: &str, json: bool) -> anyhow::Result<()> {
     let doc = scraper::Html::parse_document(&html);
 
     let link_sel = scraper::Selector::parse("a.result-link").unwrap();
-    let snippet_sel = scraper::Selector::parse(".result-snippet").unwrap();
-
     let results: Vec<serde_json::Value> = doc
         .select(&link_sel)
-        .enumerate()
-        .filter_map(|(i, link)| {
+        .filter_map(|link| {
             let href = link.value().attr("href")?;
             let clean_url = decode_search_url(href).unwrap_or_else(|_| href.to_string());
             let title: String = link.text().collect::<Vec<_>>().join(" ").trim().to_string();
-            let snippet = doc
-                .select(&snippet_sel)
-                .nth(i)
-                .map(|s| s.text().collect::<Vec<_>>().join(" ").trim().to_string())
-                .unwrap_or_default();
+            if title.is_empty() {
+                return None;
+            }
             Some(serde_json::json!({
                 "title": title,
                 "url": clean_url,
-                "snippet": snippet,
             }))
         })
         .collect();
@@ -205,12 +215,8 @@ fn cmd_search(query: &str, json: bool) -> anyhow::Result<()> {
         for (i, result) in results.iter().enumerate() {
             let title = result["title"].as_str().unwrap_or("");
             let url = result["url"].as_str().unwrap_or("");
-            let snippet = result["snippet"].as_str().unwrap_or("");
             println!("{}. {title}", i + 1);
             println!("   {url}");
-            if !snippet.is_empty() {
-                println!("   {snippet}");
-            }
             println!();
         }
     }

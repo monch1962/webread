@@ -7,7 +7,54 @@ const STRIP_TAGS: &[&str] = &["nav", "header", "footer", "aside", "script", "sty
 
 /// Return a compatible User-Agent string to avoid blocking.
 pub fn user_agent() -> String {
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15".to_string()
+    user_agent_with_override(None)
+}
+
+/// Return a User-Agent string, using an override if provided, otherwise the default.
+pub fn user_agent_with_override(override_ua: Option<&str>) -> String {
+    override_ua.unwrap_or("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15").to_string()
+}
+
+/// Parse a simple key=value config file.
+/// Lines starting with '#' are comments. Blank lines are ignored.
+/// Leading/trailing whitespace is trimmed from keys and values.
+pub fn parse_config(input: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for line in input.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(eq_pos) = line.find('=') {
+            let key = line[..eq_pos].trim().to_string();
+            let value = line[eq_pos + 1..].trim().to_string();
+            if !key.is_empty() {
+                map.insert(key, value);
+            }
+        }
+    }
+    map
+}
+
+/// Load configuration from the default config file path (~/.config/webread/config).
+/// Returns an empty HashMap if the file doesn't exist or can't be read.
+pub fn load_config() -> HashMap<String, String> {
+    let path = dirs_config_path().join("webread").join("config");
+    match std::fs::read_to_string(&path) {
+        Ok(content) => parse_config(&content),
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// Get the XDG config directory (~/.config/) or a platform-appropriate equivalent.
+fn dirs_config_path() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
+        std::path::PathBuf::from(dir)
+    } else if let Ok(home) = std::env::var("HOME") {
+        std::path::PathBuf::from(home).join(".config")
+    } else {
+        std::path::PathBuf::from(".")
+    }
 }
 
 /// Options for fetching a URL with resource guardrails.
@@ -206,6 +253,91 @@ pub fn resolve_url(base: &str, href: &str) -> String {
 #[cfg(test)]
 mod guardrail_tests {
     use super::*;
+
+    // --- Config parsing tests ---
+
+    #[test]
+    fn test_parse_config_empty() {
+        let cfg = parse_config("");
+        assert!(cfg.is_empty());
+    }
+
+    #[test]
+    fn test_parse_config_basic() {
+        let cfg = parse_config("timeout=15\nmax_size=5000000\n");
+        assert_eq!(cfg.get("timeout").unwrap(), "15");
+        assert_eq!(cfg.get("max_size").unwrap(), "5000000");
+    }
+
+    #[test]
+    fn test_parse_config_ignores_comments_and_blanks() {
+        let cfg = parse_config("# comment\n  \ntimeout=30\n# another\n");
+        assert_eq!(cfg.len(), 1);
+        assert_eq!(cfg.get("timeout").unwrap(), "30");
+    }
+
+    #[test]
+    fn test_parse_config_trims_whitespace() {
+        let cfg = parse_config("  timeout = 15  \n");
+        assert_eq!(cfg.get("timeout").unwrap(), "15");
+    }
+
+    #[test]
+    fn test_parse_config_override() {
+        let cfg = parse_config("timeout=10\nuser-agent=my-bot/1.0\n");
+        assert_eq!(cfg.get("user-agent").unwrap(), "my-bot/1.0");
+    }
+
+    // --- user_agent override test ---
+
+    #[test]
+    fn test_user_agent_custom() {
+        let ua = user_agent_with_override(Some("my-bot/1.0"));
+        assert_eq!(ua, "my-bot/1.0");
+    }
+
+    #[test]
+    fn test_user_agent_default() {
+        let ua = user_agent_with_override(None);
+        assert!(ua.contains("Mozilla/5.0"));
+        assert!(ua.contains("Safari/"));
+    }
+
+    // --- Readability comparison test ---
+
+    #[test]
+    fn test_readable_known_structure() {
+        // A simple article that extract_readable_content should handle perfectly
+        let html = "\
+<html><body>
+<nav>Nav links here</nav>
+<article>
+<h1>The Quick Brown Fox</h1>
+<p>The quick brown fox jumps over the lazy dog. This sentence contains
+every letter of the alphabet and is commonly used for typing practice.</p>
+<p>Pangrams are useful for displaying font samples and testing keyboards.
+The most well-known English pangram is the one used above.</p>
+<p>Other pangrams exist in many languages. Each language has its own set
+of commonly used pangrams that serve the same purpose.</p>
+</article>
+<footer>Copyright Footer Content</footer>
+</body></html>";
+        let result = extract_readable_content(&html).unwrap();
+        assert!(result.contains("Quick Brown Fox"), "should extract title");
+        assert!(
+            result.contains("quick brown fox jumps"),
+            "should extract body"
+        );
+        assert!(!result.contains("Nav links"), "should NOT contain nav");
+        assert!(
+            !result.contains("Copyright Footer"),
+            "should NOT contain footer"
+        );
+        // Verify the text order is preserved
+        let title_pos = result.find("Quick Brown Fox").unwrap();
+        let body_pos = result.find("quick brown fox jumps").unwrap();
+        assert!(title_pos < body_pos, "title should come before body");
+    }
 
     // --- FetchOptions defaults ---
 
