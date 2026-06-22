@@ -1,4 +1,3 @@
-# Minimal static image — no glibc, no busybox, just the binary
 FROM scratch
-COPY target/release/webread /webread
+COPY webread /webread
 ENTRYPOINT ["/webread"]
