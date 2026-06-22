@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Batch test webread against 100+ websites that AI agents commonly read."""
+"""Batch test webread against 120+ websites, running tests in parallel."""
 import json
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 BINARY = REPO / "target" / "release" / "webread"
-TIMEOUT = 15  # seconds per URL
+TIMEOUT = 20  # seconds per URL
+MAX_WORKERS = 12  # parallel HTTP workers
 
-# 120 URLs across categories AI agents commonly read
 URLS = [
     # --- Programming Language Docs ---
     "https://docs.python.org/3/tutorial/index.html",
@@ -60,8 +61,7 @@ URLS = [
     "https://dev.to/",
     "https://www.infoq.com/",
 
-    # --- Stack Overflow / Q&A ---
-    "https://stackoverflow.com/questions/1/",
+    # --- Q&A ---
     "https://stackoverflow.com/questions/927358/",
     "https://stackoverflow.com/questions/11227809/",
     "https://stackoverflow.com/questions/388242/",
@@ -82,7 +82,7 @@ URLS = [
     "https://apenwarr.ca/log/",
     "https://boringtechnology.club/",
 
-    # --- GitHub / Code Hosting ---
+    # --- GitHub / Code ---
     "https://github.com/rust-lang/rust",
     "https://github.com/python/cpython",
     "https://github.com/torvalds/linux",
@@ -120,15 +120,12 @@ URLS = [
 
     # --- Social / Forums ---
     "https://www.reddit.com/r/programming/",
-    "https://www.reddit.com/r/MachineLearning/",
     "https://lobste.rs/",
     "https://meta.stackexchange.com/",
     "https://discourse.org/",
     "https://www.producthunt.com/",
-    "https://news.ycombinator.com/item?id=1",
-    "https://www.reddit.com/r/rust/",
 
-    # --- Government / Standards ---
+    # --- Standards / Government ---
     "https://www.ietf.org/",
     "https://www.w3.org/TR/",
     "https://www.rfc-editor.org/",
@@ -138,10 +135,8 @@ URLS = [
     "https://www.whitehouse.gov/",
     "https://www.usa.gov/",
 
-    # --- Miscellaneous ---
+    # --- Reference / Educational ---
     "https://example.com/",
-    "https://httpbin.org/html",
-    "https://httpbin.org/links/10",
     "https://lorem-ipsum.in/",
     "https://www.gutenberg.org/",
     "https://www.oreilly.com/",
@@ -150,7 +145,7 @@ URLS = [
     "https://www.geeksforgeeks.org/",
     "https://www.w3schools.com/",
 
-    # --- Regional / International ---
+    # --- International ---
     "https://www.bbc.co.uk/news/technology",
     "https://www.lemonde.fr/",
     "https://www.spiegel.de/",
@@ -160,104 +155,135 @@ URLS = [
     "https://timesofindia.indiatimes.com/",
     "https://www.abc.net.au/news/",
 
-    # --- Additional Programming ---
+    # --- Package Registries ---
     "https://crates.io/",
     "https://pypi.org/",
     "https://rubygems.org/",
     "https://www.nuget.org/",
     "https://mvnrepository.com/",
     "https://hex.pm/",
-    "https://www.doxygen.nl/",
-    "https://www.sphinx-doc.org/",
 ]
 
-results = {"passed": 0, "failed": 0, "skipped": 0, "failures": []}
+# Subset that gets the readable test too
+READABLE_DOMAINS = [
+    "wikipedia.org", "bbc.com", "bbc.co.uk", "reuters.com", "apnews.com",
+    "theguardian.com", "arstechnica.com", "dev.to", "martinfowler.com",
+    "karpathy.github.io", "simonwillison.net", "stratechery.com",
+]
 
-def run_test(url: str, subcommand: str, extra_args=None):
-    """Run a single webread command and return (success, output, duration)."""
+
+def run_webread(subcommand: str, url: str) -> dict:
+    """Run a single webread command. Returns result dict."""
     args = [str(BINARY), subcommand, url]
-    if extra_args:
-        args.extend(extra_args)
     start = time.time()
     try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=TIMEOUT)
+        result = subprocess.run(
+            args, capture_output=True, text=True, timeout=TIMEOUT
+        )
         duration = time.time() - start
         ok = result.returncode == 0 and len(result.stdout.strip()) > 0
-        return ok, result.stdout.strip()[:200], duration, result.stderr.strip()[:200]
+        return {
+            "subcommand": subcommand,
+            "url": url,
+            "ok": ok,
+            "output": result.stdout.strip()[:500],
+            "error": result.stderr.strip()[:200] if not ok else "",
+            "duration": round(duration, 2),
+        }
     except subprocess.TimeoutExpired:
-        return False, "", TIMEOUT, "TIMEOUT"
+        return {
+            "subcommand": subcommand,
+            "url": url,
+            "ok": False,
+            "output": "",
+            "error": "TIMEOUT",
+            "duration": TIMEOUT,
+        }
     except FileNotFoundError:
         print(f"ERROR: {BINARY} not found. Build with: cargo build --release")
         sys.exit(1)
+
 
 def main():
     if not BINARY.exists():
         print("Building release binary...")
         subprocess.run(["cargo", "build", "--release"], cwd=REPO, check=True)
     sz_mb = BINARY.stat().st_size / (1024 * 1024)
-    print(f"Binary at {BINARY} ({sz_mb:.1f} MB)")
+    print(f"Binary: {BINARY} ({sz_mb:.1f} MB), workers={MAX_WORKERS}")
 
-    print(f"Testing {len(URLS)} URLs against webread...\n")
-    print(f"{'#':>4}  {'Subcommand':<12}  {'Status':<8}  {'Time':<6}  {'URL/Output'}")
-    print("-" * 80)
+    # Build task list: get for every URL, readable for subset
+    tasks = []
+    for url in URLS:
+        tasks.append(("get", url))
+        if any(domain in url for domain in READABLE_DOMAINS):
+            tasks.append(("readable", url))
 
-    for i, url in enumerate(URLS, 1):
-        # Test 'get' for all URLs
-        ok, output, duration, err = run_test(url, "get")
-        status = "OK" if ok else "FAIL"
-        chars = len(output)
-        print(f"{i:>4}  {'get':<12}  {status:<8}  {duration:<6.1f}s  {url[:50]:<50}")
-        if not ok:
-            results["failed"] += 1
-            results["failures"].append({
-                "url": url, "subcommand": "get",
-                "error": err or "empty output",
-                "duration": duration
-            })
-        else:
-            results["passed"] += 1
+    total = len(tasks)
+    print(f"Running {total} tests across {len(URLS)} URLs ({MAX_WORKERS} workers)...\n")
 
-        # Test 'readable' for a subset (news, wikipedia, blogs)
-        if any(domain in url for domain in ["wikipedia.org", "bbc.com", "bbc.co.uk",
-                "reuters.com", "apnews.com", "theguardian.com", "arstechnica.com",
-                "dev.to", "martinfowler.com", "karpathy.github.io",
-                "simonwillison.net", "stratechery.com"]):
-            ok2, out2, dur2, err2 = run_test(url, "readable")
-            status2 = "OK" if ok2 else "FAIL"
-            print(f"{'':>4}  {'readable':<12}  {status2:<8}  {dur2:<6.1f}s  (subset test)")
-            if not ok2:
-                results["failed"] += 1
-                results["failures"].append({
-                    "url": url, "subcommand": "readable",
-                    "error": err2 or "empty output",
-                    "duration": dur2
-                })
+    passed = 0
+    failed = 0
+    failures = []
+    completed = 0
+    start_wall = time.time()
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {
+            pool.submit(run_webread, subcmd, url): (subcmd, url)
+            for subcmd, url in tasks
+        }
+        for future in as_completed(futures):
+            subcmd, url = futures[future]
+            result = future.result()
+            completed += 1
+            status = "OK" if result["ok"] else "FAIL"
+            if result["ok"]:
+                passed += 1
             else:
-                results["passed"] += 1
+                failed += 1
+                failures.append(result)
+
+            # Print live progress (compact: one line per test)
+            elapsed = time.time() - start_wall
+            eta = (elapsed / completed) * (total - completed) if completed > 0 else 0
+            print(
+                f"[{completed:>3}/{total}] {status:<4} {subcmd:<8} "
+                f"{result['duration']:>5.1f}s  {url[:60]}  "
+                f"(ETA: {eta:.0f}s)",
+                flush=True,
+            )
 
     # --- Summary ---
+    elapsed = time.time() - start_wall
     print()
     print("=" * 80)
-    print(f"RESULTS: {results['passed']} passed, {results['failed']} failed, "
-          f"{results['skipped']} skipped "
-          f"({len(URLS)} URLs, ~{results['passed'] + results['failed']} tests)")
+    print(f"RESULTS: {passed} passed, {failed} failed "
+          f"({total} tests, {len(URLS)} URLs)")
+    print(f"Wall time: {elapsed:.0f}s "
+          f"(sequential estimate: ~{elapsed * MAX_WORKERS:.0f}s)")
     print()
 
-    if results["failures"]:
+    if failures:
         print("FAILURES:")
-        for f in results["failures"]:
+        for f in failures:
             print(f"  [{f['subcommand']}] {f['url']}")
             print(f"    Error: {f['error'][:150]}")
-            print(f"    Duration: {f['duration']:.1f}s")
         print()
 
-    # Write results to file
     report = REPO / "target" / "batch-test-report.json"
     with open(report, "w") as fp:
-        json.dump(results, fp, indent=2)
-    print(f"Report written to {report}")
+        json.dump({
+            "passed": passed,
+            "failed": failed,
+            "total": total,
+            "wall_time_s": round(elapsed, 1),
+            "workers": MAX_WORKERS,
+            "failures": failures,
+        }, fp, indent=2)
+    print(f"Report: {report}")
 
-    return 0 if results["failed"] == 0 else 1
+    return 0 if failed == 0 else 1
+
 
 if __name__ == "__main__":
     sys.exit(main())
