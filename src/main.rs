@@ -139,7 +139,10 @@ fn cmd_readable(url: &str, json: bool) -> anyhow::Result<()> {
 
 fn cmd_search(query: &str, json: bool) -> anyhow::Result<()> {
     let url = "https://lite.duckduckgo.com/lite/";
-    let response = ureq::get(url).query("q", query).call()?;
+    let response = ureq::get(url)
+        .query("q", query)
+        .header("User-Agent", &webread::user_agent())
+        .call()?;
     let html = response.into_body().read_to_string()?;
     let doc = scraper::Html::parse_document(&html);
 
