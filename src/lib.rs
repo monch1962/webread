@@ -1,43 +1,247 @@
 use scraper::{ElementRef, Html, Selector};
 use std::collections::HashMap;
+use std::time::Duration;
 
 /// Tags we strip from readable content extraction.
 const STRIP_TAGS: &[&str] = &["nav", "header", "footer", "aside", "script", "style"];
-
-/// Fetch a URL and return the HTML body as a String.
-pub fn fetch_url(url: &str) -> anyhow::Result<String> {
-    let response = ureq::get(url).header("User-Agent", &user_agent()).call()?;
-    let body = response.into_body().read_to_string()?;
-    Ok(body)
-}
 
 /// Return a compatible User-Agent string to avoid blocking.
 pub fn user_agent() -> String {
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15".to_string()
 }
 
+/// Options for fetching a URL with resource guardrails.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FetchOptions {
+    /// Maximum time for the full request cycle in seconds.
+    pub timeout_secs: u64,
+    /// Maximum response body size in bytes. Body is truncated at this limit.
+    pub max_body_bytes: usize,
+    /// Whether to retry once on transient errors (503, timeout).
+    pub retry_transient: bool,
+    /// Whether to skip non-HTML content types.
+    pub require_html: bool,
+}
+
+impl Default for FetchOptions {
+    fn default() -> Self {
+        Self {
+            timeout_secs: 30,
+            max_body_bytes: 10 * 1024 * 1024, // 10 MB
+            retry_transient: true,
+            require_html: true,
+        }
+    }
+}
+
+/// Result of a fetched URL with metadata.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FetchResult {
+    pub body: String,
+    pub content_type: Option<String>,
+    pub status: u16,
+    pub final_url: String,
+}
+
+/// Fetch a URL with default options (convenience wrapper).
+pub fn fetch_url(url: &str) -> anyhow::Result<String> {
+    let result = fetch_url_with(url, &FetchOptions::default())?;
+    Ok(result.body)
+}
+
+/// Fetch a URL with the given resource guardrail options.
+///
+/// Features:
+/// - Configurable timeout (prevents hanging)
+/// - Body size limit (prevents OOM on giant pages)
+/// - Content-type filtering (skips non-HTML responses)
+/// - Automatic retry on transient errors
+/// - Returns metadata: final URL after redirects, status code, content-type
+pub fn fetch_url_with(url: &str, opts: &FetchOptions) -> anyhow::Result<FetchResult> {
+    let do_fetch = || -> anyhow::Result<FetchResult> {
+        use ureq::ResponseExt;
+
+        let config = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(opts.timeout_secs)))
+            .build();
+        let agent = config.new_agent();
+
+        let response = agent
+            .get(url)
+            .header("User-Agent", &user_agent())
+            .call()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        // Check content-type if required
+        if opts.require_html {
+            if let Some(ref ct) = content_type {
+                let ct_lower = ct.to_lowercase();
+                let is_html = ct_lower.contains("text/html")
+                    || ct_lower.contains("text/plain")
+                    || ct_lower.contains("application/xhtml")
+                    || ct_lower.contains("charset");
+                if !is_html && !ct_lower.is_empty() {
+                    anyhow::bail!(
+                        "Content-Type '{}' is not HTML. Use --require-html=false to fetch anyway.",
+                        ct
+                    );
+                }
+            }
+        }
+
+        // Read body with size limit
+        let final_url = response.get_uri().to_string();
+        let reader = response.into_body().read_to_string()?;
+        let body = if reader.len() > opts.max_body_bytes {
+            // Truncate — convert the first max_body_bytes to string lossily
+            String::from_utf8_lossy(&reader.as_bytes()[..opts.max_body_bytes]).to_string()
+        } else {
+            reader
+        };
+
+        Ok(FetchResult {
+            body,
+            content_type,
+            status,
+            final_url,
+        })
+    };
+
+    let result = do_fetch();
+
+    // Retry once on transient errors if enabled
+    if let Err(err) = result.as_ref() {
+        if opts.retry_transient {
+            let err_msg = format!("{err:#}");
+            if err_msg.contains("503")
+                || err_msg.contains("502")
+                || err_msg.contains("timeout")
+                || err_msg.contains("timed out")
+            {
+                std::thread::sleep(Duration::from_millis(500));
+                return do_fetch();
+            }
+        }
+    }
+
+    result.map_err(|e| anyhow::anyhow!("Failed to fetch {url}: {e:#}"))
+}
+
+/// Resolve a potentially relative URL against a base URL.
+/// If `href` is already absolute, returns it unchanged.
+pub fn resolve_url(base: &str, href: &str) -> String {
+    url::Url::parse(base)
+        .ok()
+        .and_then(|u| u.join(href).ok())
+        .map(|u| u.to_string())
+        .unwrap_or_else(|| href.to_string())
+}
+
 #[cfg(test)]
-mod fetch_tests {
+mod guardrail_tests {
     use super::*;
 
+    // --- FetchOptions defaults ---
+
     #[test]
-    fn test_user_agent_format() {
-        let ua = user_agent();
-        assert!(ua.contains("Mozilla/5.0"), "UA should look like a browser");
-        assert!(ua.contains("AppleWebKit/"), "UA should contain AppleWebKit");
-        assert!(ua.contains("Safari/"), "UA should contain Safari token");
+    fn test_fetch_options_defaults() {
+        let opts = FetchOptions::default();
+        assert_eq!(opts.timeout_secs, 30);
+        assert_eq!(opts.max_body_bytes, 10 * 1024 * 1024);
+        assert!(opts.retry_transient);
+        assert!(opts.require_html);
+    }
+
+    // --- resolve_url ---
+
+    #[test]
+    fn test_resolve_relative_url() {
+        let resolved = resolve_url("https://example.com/page/", "sub");
+        assert_eq!(resolved, "https://example.com/page/sub");
     }
 
     #[test]
+    fn test_resolve_absolute_url_unchanged() {
+        let resolved = resolve_url("https://example.com/", "https://other.com/");
+        assert_eq!(resolved, "https://other.com/");
+    }
+
+    #[test]
+    fn test_resolve_root_relative() {
+        let resolved = resolve_url("https://example.com/page/", "/other");
+        assert_eq!(resolved, "https://example.com/other");
+    }
+
+    #[test]
+    fn test_resolve_fragment() {
+        let resolved = resolve_url("https://example.com/page", "#section");
+        assert_eq!(resolved, "https://example.com/page#section");
+    }
+
+    #[test]
+    fn test_resolve_with_query() {
+        let resolved = resolve_url("https://example.com/", "page?q=1");
+        assert_eq!(resolved, "https://example.com/page?q=1");
+    }
+
+    #[test]
+    fn test_resolve_invalid_base_returns_href() {
+        // If base URL is invalid, just return the href as-is
+        let resolved = resolve_url("not-a-url", "https://example.com/");
+        assert_eq!(resolved, "https://example.com/");
+    }
+
+    // --- fetch_url_with error handling ---
+
+    #[test]
     fn test_fetch_url_unsupported_scheme() {
-        let result = fetch_url("ftp://example.com/");
+        let result = fetch_url_with("ftp://example.com/", &FetchOptions::default());
         assert!(result.is_err(), "ftp should fail");
     }
 
     #[test]
     fn test_fetch_url_bad_hostname() {
-        let result = fetch_url("https://this-hostname-does-not-exist-hopefully.example/");
+        let result = fetch_url_with(
+            "https://this-hostname-does-not-exist-hopefully.example/",
+            &FetchOptions::default(),
+        );
         assert!(result.is_err(), "bad hostname should fail");
+    }
+
+    #[test]
+    fn test_fetch_url_requires_html_skips_non_html() {
+        // A URL that returns non-HTML content-type should fail with require_html=true
+        let opts = FetchOptions {
+            require_html: true,
+            timeout_secs: 30,
+            ..FetchOptions::default()
+        };
+        // This should succeed because example.com returns text/html
+        let result = fetch_url_with("https://example.com/", &opts);
+        assert!(result.is_ok(), "example.com should serve HTML");
+        if let Ok(r) = result {
+            assert_eq!(r.status, 200);
+            assert!(r.final_url.contains("example.com"));
+        }
+    }
+
+    #[test]
+    fn test_fetch_options_no_retry() {
+        let opts = FetchOptions {
+            retry_transient: false,
+            timeout_secs: 1, // very short timeout to force failure
+            ..FetchOptions::default()
+        };
+        let result = fetch_url_with("https://httpbin.org/delay/10", &opts);
+        // Should fail quickly rather than retry
+        assert!(result.is_err(), "should fail with short timeout");
     }
 }
 

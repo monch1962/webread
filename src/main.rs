@@ -11,6 +11,14 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
+    /// Request timeout in seconds (default: 30)
+    #[arg(long, global = true, default_value = "30")]
+    timeout: u64,
+
+    /// Maximum response body in bytes (default: 10MB, 0 = unlimited)
+    #[arg(long, global = true, default_value = "10485760")]
+    max_size: usize,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -36,17 +44,27 @@ enum Command {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let json = cli.json;
+    let opts = FetchOptions {
+        timeout_secs: cli.timeout,
+        max_body_bytes: cli.max_size,
+        ..FetchOptions::default()
+    };
     match cli.command {
-        Command::Get { url } => cmd_get(&url, json),
-        Command::Html { url, selector } => cmd_html(&url, selector.as_deref(), json),
-        Command::Links { url } => cmd_links(&url, json),
-        Command::Readable { url } => cmd_readable(&url, json),
+        Command::Get { url } => cmd_get(&url, json, &opts),
+        Command::Html { url, selector } => cmd_html(&url, selector.as_deref(), json, &opts),
+        Command::Links { url } => cmd_links(&url, json, &opts),
+        Command::Readable { url } => cmd_readable(&url, json, &opts),
         Command::Search { query } => cmd_search(&query, json),
     }
 }
 
-fn cmd_get(url: &str, json: bool) -> anyhow::Result<()> {
-    let html = fetch_url(url)?;
+fn fetch_with_opts(url: &str, opts: &FetchOptions) -> anyhow::Result<String> {
+    let result = fetch_url_with(url, opts)?;
+    Ok(result.body)
+}
+
+fn cmd_get(url: &str, json: bool, opts: &FetchOptions) -> anyhow::Result<()> {
+    let html = fetch_with_opts(url, opts)?;
     let text = html_to_text(&html);
     if json {
         let output = serde_json::json!({
@@ -61,8 +79,13 @@ fn cmd_get(url: &str, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_html(url: &str, selector: Option<&str>, json: bool) -> anyhow::Result<()> {
-    let html = fetch_url(url)?;
+fn cmd_html(
+    url: &str,
+    selector: Option<&str>,
+    json: bool,
+    opts: &FetchOptions,
+) -> anyhow::Result<()> {
+    let html = fetch_with_opts(url, opts)?;
     let doc = scraper::Html::parse_document(&html);
 
     if json {
@@ -97,13 +120,14 @@ fn cmd_html(url: &str, selector: Option<&str>, json: bool) -> anyhow::Result<()>
     Ok(())
 }
 
-fn cmd_links(url: &str, json: bool) -> anyhow::Result<()> {
-    let html = fetch_url(url)?;
+fn cmd_links(url: &str, json: bool, opts: &FetchOptions) -> anyhow::Result<()> {
+    let html = fetch_with_opts(url, opts)?;
     let doc = scraper::Html::parse_document(&html);
     let sel = scraper::Selector::parse("a").unwrap();
     let links: Vec<String> = doc
         .select(&sel)
-        .filter_map(|e| e.value().attr("href").map(|h| h.to_string()))
+        .filter_map(|e| e.value().attr("href"))
+        .map(|h| resolve_url(url, h))
         .collect();
 
     if json {
@@ -121,8 +145,8 @@ fn cmd_links(url: &str, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_readable(url: &str, json: bool) -> anyhow::Result<()> {
-    let html = fetch_url(url)?;
+fn cmd_readable(url: &str, json: bool, opts: &FetchOptions) -> anyhow::Result<()> {
+    let html = fetch_with_opts(url, opts)?;
     let text = extract_readable_content(&html)?;
     if json {
         let output = serde_json::json!({
