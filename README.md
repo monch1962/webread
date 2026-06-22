@@ -79,14 +79,16 @@ selects the most paragraph-rich region, and excludes sidebars and navigation.
 ## Test Suite
 
 ```
-cargo test        # 43 tests (21 unit + 22 integration)
+cargo test        # 45 tests (21 unit + 24 integration, parallel by default)
 cargo clippy      # Zero warnings
 ```
 
 Cross-site integration tests validate against real websites:
 Wikipedia, GitHub, arXiv, Hacker News, dev.to, example.com.
+Integration tests use `std::thread::spawn` for concurrent subcommand
+execution to verify no shared-state corruption.
 
-For the full 130+ site batch test:
+For the full 130+ site batch test (parallel, ~40 seconds with 12 workers):
 ```bash
 python3 tests/batch_test.py
 ```
