@@ -7,6 +7,10 @@ use webread::*;
     about = "Fetch, extract, and search web content from the CLI"
 )]
 struct Cli {
+    /// Output as JSON
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -31,75 +35,155 @@ enum Command {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let json = cli.json;
     match cli.command {
-        Command::Get { url } => cmd_get(&url),
-        Command::Html { url, selector } => cmd_html(&url, selector.as_deref()),
-        Command::Links { url } => cmd_links(&url),
-        Command::Readable { url } => cmd_readable(&url),
-        Command::Search { query } => cmd_search(&query),
+        Command::Get { url } => cmd_get(&url, json),
+        Command::Html { url, selector } => cmd_html(&url, selector.as_deref(), json),
+        Command::Links { url } => cmd_links(&url, json),
+        Command::Readable { url } => cmd_readable(&url, json),
+        Command::Search { query } => cmd_search(&query, json),
     }
 }
 
-fn cmd_get(url: &str) -> anyhow::Result<()> {
+fn cmd_get(url: &str, json: bool) -> anyhow::Result<()> {
     let html = fetch_url(url)?;
     let text = html_to_text(&html);
-    println!("{text}");
+    if json {
+        let output = serde_json::json!({
+            "url": url,
+            "text": text,
+            "char_count": text.len(),
+        });
+        println!("{output}");
+    } else {
+        println!("{text}");
+    }
     Ok(())
 }
 
-fn cmd_html(url: &str, selector: Option<&str>) -> anyhow::Result<()> {
+fn cmd_html(url: &str, selector: Option<&str>, json: bool) -> anyhow::Result<()> {
     let html = fetch_url(url)?;
     let doc = scraper::Html::parse_document(&html);
 
-    if let Some(sel_str) = selector {
-        let sel = scraper::Selector::parse(sel_str)
-            .map_err(|e| anyhow::anyhow!("Invalid CSS selector '{sel_str}': {e}"))?;
-        for element in doc.select(&sel) {
-            println!("{}", element.html());
-        }
+    if json {
+        let selected = if let Some(sel_str) = selector {
+            if let Ok(sel) = scraper::Selector::parse(sel_str) {
+                let fragments: Vec<String> = doc.select(&sel).map(|e| e.html()).collect();
+                fragments
+            } else {
+                Vec::new()
+            }
+        } else {
+            vec![html.to_string()]
+        };
+        let output = serde_json::json!({
+            "url": url,
+            "selector": selector,
+            "html": selected.join("\n"),
+            "match_count": selected.len(),
+        });
+        println!("{output}");
     } else {
-        println!("{html}");
+        if let Some(sel_str) = selector {
+            let sel = scraper::Selector::parse(sel_str)
+                .map_err(|e| anyhow::anyhow!("Invalid CSS selector '{sel_str}': {e}"))?;
+            for element in doc.select(&sel) {
+                println!("{}", element.html());
+            }
+        } else {
+            println!("{html}");
+        }
     }
     Ok(())
 }
 
-fn cmd_links(url: &str) -> anyhow::Result<()> {
+fn cmd_links(url: &str, json: bool) -> anyhow::Result<()> {
     let html = fetch_url(url)?;
     let doc = scraper::Html::parse_document(&html);
     let sel = scraper::Selector::parse("a").unwrap();
+    let links: Vec<String> = doc
+        .select(&sel)
+        .filter_map(|e| e.value().attr("href").map(|h| h.to_string()))
+        .collect();
 
-    for element in doc.select(&sel) {
-        if let Some(href) = element.value().attr("href") {
+    if json {
+        let output = serde_json::json!({
+            "url": url,
+            "links": links,
+            "total": links.len(),
+        });
+        println!("{output}");
+    } else {
+        for href in &links {
             println!("{href}");
         }
     }
     Ok(())
 }
 
-fn cmd_readable(url: &str) -> anyhow::Result<()> {
+fn cmd_readable(url: &str, json: bool) -> anyhow::Result<()> {
     let html = fetch_url(url)?;
     let text = extract_readable_content(&html)?;
-    println!("{text}");
+    if json {
+        let output = serde_json::json!({
+            "url": url,
+            "text": text,
+            "char_count": text.len(),
+        });
+        println!("{output}");
+    } else {
+        println!("{text}");
+    }
     Ok(())
 }
 
-fn cmd_search(query: &str) -> anyhow::Result<()> {
+fn cmd_search(query: &str, json: bool) -> anyhow::Result<()> {
     let url = "https://lite.duckduckgo.com/lite/";
     let response = ureq::get(url).query("q", query).call()?;
     let html = response.into_body().read_to_string()?;
     let doc = scraper::Html::parse_document(&html);
 
     let link_sel = scraper::Selector::parse("a.result-link").unwrap();
+    let snippet_sel = scraper::Selector::parse(".result-snippet").unwrap();
 
-    println!("=== Search results for: {query} ===");
-    for (i, link) in doc.select(&link_sel).enumerate() {
-        if let Some(href) = link.value().attr("href") {
-            // Decode DuckDuckGo redirect URLs
+    let results: Vec<serde_json::Value> = doc
+        .select(&link_sel)
+        .enumerate()
+        .filter_map(|(i, link)| {
+            let href = link.value().attr("href")?;
             let clean_url = decode_search_url(href).unwrap_or_else(|_| href.to_string());
-            let title: Vec<&str> = link.text().collect();
-            let title = title.join(" ").trim().to_string();
+            let title: String = link.text().collect::<Vec<_>>().join(" ").trim().to_string();
+            let snippet = doc
+                .select(&snippet_sel)
+                .nth(i)
+                .map(|s| s.text().collect::<Vec<_>>().join(" ").trim().to_string())
+                .unwrap_or_default();
+            Some(serde_json::json!({
+                "title": title,
+                "url": clean_url,
+                "snippet": snippet,
+            }))
+        })
+        .collect();
+
+    if json {
+        let output = serde_json::json!({
+            "query": query,
+            "results": results,
+            "total": results.len(),
+        });
+        println!("{output}");
+    } else {
+        println!("=== Search results for: {query} ===");
+        for (i, result) in results.iter().enumerate() {
+            let title = result["title"].as_str().unwrap_or("");
+            let url = result["url"].as_str().unwrap_or("");
+            let snippet = result["snippet"].as_str().unwrap_or("");
             println!("{}. {title}", i + 1);
-            println!("   {clean_url}");
+            println!("   {url}");
+            if !snippet.is_empty() {
+                println!("   {snippet}");
+            }
             println!();
         }
     }
