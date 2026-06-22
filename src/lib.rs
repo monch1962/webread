@@ -1,5 +1,8 @@
-use scraper::{Html, Selector};
+use scraper::{ElementRef, Html, Selector};
 use std::collections::HashMap;
+
+/// Tags we strip from readable content extraction.
+const STRIP_TAGS: &[&str] = &["nav", "header", "footer", "aside", "script", "style"];
 
 /// Fetch a URL and return the HTML body as a String.
 pub fn fetch_url(url: &str) -> anyhow::Result<String> {
@@ -8,68 +11,49 @@ pub fn fetch_url(url: &str) -> anyhow::Result<String> {
     Ok(body)
 }
 
-/// Extract clean text from HTML by walking the document tree.
-pub fn html_to_text(html: &str) -> String {
-    let doc = Html::parse_document(html);
-    fn collect_text(element: scraper::ElementRef) -> String {
-        let mut text = String::new();
+/// Walk the element tree and collect text content, optionally skipping
+/// elements whose tag name appears in `strip`.
+fn collect_text(element: ElementRef, strip: &[&str]) -> String {
+    let mut text = String::new();
+    let tag_name = element.value().name();
 
-        for child in element.children() {
-            match child.value() {
-                scraper::node::Node::Text(t) => {
-                    let t = t.trim();
-                    if !t.is_empty() {
+    // Skip stripped elements
+    if strip.contains(&tag_name) {
+        return text;
+    }
+
+    for child in element.children() {
+        match child.value() {
+            scraper::node::Node::Text(t) => {
+                let t = t.trim();
+                if !t.is_empty() {
+                    if !text.is_empty() && !text.ends_with(' ') {
+                        text.push(' ');
+                    }
+                    text.push_str(t);
+                }
+            }
+            scraper::node::Node::Element(_) => {
+                if let Some(child_elem) = ElementRef::wrap(child) {
+                    let child_text = collect_text(child_elem, strip);
+                    if !child_text.is_empty() {
                         if !text.is_empty() && !text.ends_with(' ') {
                             text.push(' ');
                         }
-                        text.push_str(t);
+                        text.push_str(&child_text);
                     }
                 }
-                scraper::node::Node::Element(_) => {
-                    if let Some(child_elem) = scraper::ElementRef::wrap(child) {
-                        let child_text = collect_text(child_elem);
-                        if !child_text.is_empty() {
-                            if !text.is_empty() && !text.ends_with(' ') {
-                                text.push(' ');
-                            }
-                            text.push_str(&child_text);
-                        }
-                    }
-                }
-                _ => {}
             }
+            _ => {}
         }
-        text
     }
-
-    let root = Selector::parse("body")
-        .ok()
-        .and_then(|s| doc.select(&s).next());
-
-    let text = if let Some(body) = root {
-        collect_text(body)
-    } else {
-        let html_el = doc.root_element();
-        collect_text(html_el)
-    };
-
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    text
 }
 
-/// Extract readable content from an HTML page, stripping navigation,
-/// headers, footers, sidebars, and other non-content elements.
-/// Returns the cleaned text if readable content is found, or falls back
-/// to html_to_text().
-pub fn extract_readable_content(html: &str) -> anyhow::Result<String> {
-    use scraper::ElementRef;
-
-    let doc = Html::parse_document(html);
-
-    // Elements to strip from the content extraction
-    const STRIP_TAGS: &[&str] = &["nav", "header", "footer", "aside", "script", "style"];
-
-    // Try article first, then main, then body
-    let target = Selector::parse("article")
+/// Get the root content element from a parsed document: try <article>,
+/// then <main>, then <body>, falling back to <html>.
+fn content_root(doc: &Html) -> ElementRef<'_> {
+    Selector::parse("article")
         .ok()
         .and_then(|s| doc.select(&s).next())
         .or_else(|| {
@@ -81,49 +65,35 @@ pub fn extract_readable_content(html: &str) -> anyhow::Result<String> {
             Selector::parse("body")
                 .ok()
                 .and_then(|s| doc.select(&s).next())
-        });
+        })
+        .unwrap_or_else(|| doc.root_element())
+}
 
-    let root = target.ok_or_else(|| anyhow::anyhow!("No readable content found"))?;
+/// Normalize whitespace: collapse all runs of whitespace to single spaces.
+fn normalize_space(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
 
-    fn collect_readable(element: ElementRef, strip: &[&str]) -> String {
-        let mut text = String::new();
-        let tag_name = element.value().name();
+/// Extract clean text from HTML by walking the document tree.
+/// Collects text from <body> (or <html> as fallback) without stripping
+/// any elements.
+pub fn html_to_text(html: &str) -> String {
+    let doc = Html::parse_document(html);
+    let root = content_root(&doc);
+    let text = collect_text(root, &[]);
+    normalize_space(&text)
+}
 
-        // Skip stripped elements
-        if strip.contains(&tag_name) {
-            return text;
-        }
-
-        for child in element.children() {
-            match child.value() {
-                scraper::node::Node::Text(t) => {
-                    let t = t.trim();
-                    if !t.is_empty() {
-                        if !text.is_empty() && !text.ends_with(' ') {
-                            text.push(' ');
-                        }
-                        text.push_str(t);
-                    }
-                }
-                scraper::node::Node::Element(_) => {
-                    if let Some(child_elem) = ElementRef::wrap(child) {
-                        let child_text = collect_readable(child_elem, strip);
-                        if !child_text.is_empty() {
-                            if !text.is_empty() && !text.ends_with(' ') {
-                                text.push(' ');
-                            }
-                            text.push_str(&child_text);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        text
-    }
-
-    let text = collect_readable(root, STRIP_TAGS);
-    let cleaned = text.split_whitespace().collect::<Vec<_>>().join(" ");
+/// Extract readable content from an HTML page, stripping navigation,
+/// headers, footers, sidebars, and other non-content elements.
+/// Targets <article> first, then <main>, then <body>.
+/// Returns the cleaned text if readable content is found, or falls back
+/// to html_to_text().
+pub fn extract_readable_content(html: &str) -> anyhow::Result<String> {
+    let doc = Html::parse_document(html);
+    let root = content_root(&doc);
+    let text = collect_text(root, STRIP_TAGS);
+    let cleaned = normalize_space(&text);
 
     if cleaned.is_empty() {
         Ok(html_to_text(html))
@@ -197,6 +167,8 @@ fn urlencoding_decode(input: &str) -> anyhow::Result<String> {
 mod tests {
     use super::*;
 
+    // --- URL decoding tests ---
+
     #[test]
     fn test_decode_ddg_redirect() {
         let redirect = "//duckduckgo.com/l/?uddg=https%3A%2F%2Frust-lang.org%2F&rut=abc123";
@@ -240,11 +212,12 @@ mod tests {
         assert!(urlencoding_decode("hello%2").is_err());
     }
 
+    // --- HTML text extraction tests ---
+
     #[test]
     fn test_html_to_text_simple() {
         let html = "<html><body><p>Hello world</p></body></html>";
         let text = html_to_text(html);
-        // Should extract clean text without HTML tags
         assert!(text.contains("Hello"));
         assert!(text.contains("world"));
         assert!(!text.contains("<p>"));
@@ -258,9 +231,10 @@ mod tests {
         assert!(text.contains("Title"));
         assert!(text.contains("Paragraph one."));
         assert!(text.contains("Paragraph two."));
-        // Should be single line
         assert!(!text.contains('\n'));
     }
+
+    // --- Readable content tests ---
 
     #[test]
     fn test_extract_article_content() {
@@ -284,13 +258,10 @@ mod tests {
             text.contains("main article content"),
             "should contain article body"
         );
-        // These may or may not be in the output depending on implementation
-        // Currently nav/footer text still appears because we just select <body>
     }
 
     #[test]
     fn test_readable_strips_nav_footer() {
-        // When using extract_readable_content(), nav/footer should be removed
         let html = "\
 <html><body>
 <nav>Navigation</nav>
@@ -315,5 +286,38 @@ mod tests {
         );
         assert!(!text.contains("Sidebar"), "should NOT contain sidebar text");
         assert!(!text.contains("Footer"), "should NOT contain footer text");
+    }
+
+    #[test]
+    fn test_collect_text_vs_readable_no_strip_equivalent() {
+        let html = "<html><body><p>Hello world</p><div>More text</div></body></html>";
+        assert_eq!(html_to_text(html), "Hello world More text");
+    }
+
+    // --- Edge case tests ---
+
+    #[test]
+    fn test_empty_html() {
+        let text = html_to_text("");
+        assert!(text.is_empty() || text.trim().is_empty());
+    }
+
+    #[test]
+    fn test_html_no_body() {
+        let text = html_to_text("<html></html>");
+        assert!(text.trim().is_empty());
+    }
+
+    #[test]
+    fn test_html_only_comments() {
+        let text = html_to_text("<html><body><!-- just a comment --></body></html>");
+        assert!(text.trim().is_empty());
+    }
+
+    #[test]
+    fn test_readable_empty_article() {
+        let result = extract_readable_content("<html><body><article></article></body></html>");
+        assert!(result.is_ok());
+        assert!(result.unwrap().trim().is_empty());
     }
 }
