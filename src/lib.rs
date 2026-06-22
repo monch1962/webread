@@ -80,25 +80,6 @@ fn collect_text(element: ElementRef, strip: &[&str]) -> String {
     text
 }
 
-/// Get the root content element from a parsed document: try <article>,
-/// then <main>, then <body>, falling back to <html>.
-fn content_root(doc: &Html) -> ElementRef<'_> {
-    Selector::parse("article")
-        .ok()
-        .and_then(|s| doc.select(&s).next())
-        .or_else(|| {
-            Selector::parse("main")
-                .ok()
-                .and_then(|s| doc.select(&s).next())
-        })
-        .or_else(|| {
-            Selector::parse("body")
-                .ok()
-                .and_then(|s| doc.select(&s).next())
-        })
-        .unwrap_or_else(|| doc.root_element())
-}
-
 /// Normalize whitespace: collapse all runs of whitespace to single spaces.
 fn normalize_space(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -109,26 +90,155 @@ fn normalize_space(s: &str) -> String {
 /// any elements.
 pub fn html_to_text(html: &str) -> String {
     let doc = Html::parse_document(html);
-    let root = content_root(&doc);
+    let root = Selector::parse("body")
+        .ok()
+        .and_then(|s| doc.select(&s).next())
+        .unwrap_or_else(|| doc.root_element());
     let text = collect_text(root, &[]);
     normalize_space(&text)
 }
 
-/// Extract readable content from an HTML page, stripping navigation,
-/// headers, footers, sidebars, and other non-content elements.
-/// Targets <article> first, then <main>, then <body>.
-/// Returns the cleaned text if readable content is found, or falls back
-/// to html_to_text().
+/// Extract readable content from an HTML page using content scoring.
+///
+/// Implements a simplified Mozilla Readability algorithm:
+/// 1. Score content candidates by paragraph density
+/// 2. Prefer semantic tags (article, main) and content-rich regions
+/// 3. Strip known non-content elements from the result
+/// 4. Fall back to html_to_text() if nothing scores above threshold
 pub fn extract_readable_content(html: &str) -> anyhow::Result<String> {
-    let doc = Html::parse_document(html);
-    let root = content_root(&doc);
-    let text = collect_text(root, STRIP_TAGS);
-    let cleaned = normalize_space(&text);
+    fn text_len(e: ElementRef) -> usize {
+        e.text().collect::<String>().trim().len()
+    }
 
-    if cleaned.is_empty() {
-        Ok(html_to_text(html))
-    } else {
+    fn has_content_class(e: ElementRef) -> bool {
+        let id = e.value().attr("id").unwrap_or("");
+        let class = e.value().attr("class").unwrap_or("");
+        let combined = format!("{id} {class}").to_lowercase();
+        // Positive signals: content-bearing keywords
+        let positive = [
+            "content", "article", "post", "entry", "main", "story", "body", "text", "news", "blog",
+        ];
+        // Negative signals: non-content keywords
+        let negative = [
+            "sidebar",
+            "comment",
+            "widget",
+            "footer",
+            "header",
+            "nav",
+            "menu",
+            "related",
+            "social",
+            "share",
+            "meta",
+            "search",
+            "ad-",
+            "advertisement",
+            "promo",
+            "sponsor",
+        ];
+
+        let has_positive = positive.iter().any(|k| combined.contains(k));
+        let has_negative = negative.iter().any(|k| combined.contains(k));
+        has_positive && !has_negative
+    }
+
+    fn score_element(e: ElementRef) -> f64 {
+        let p_sel = Selector::parse("p").unwrap();
+        // Count paragraphs and their total text length
+        let paragraphs: Vec<ElementRef> = e.select(&p_sel).collect();
+        if paragraphs.is_empty() {
+            return 0.0;
+        }
+        let total_text: usize = paragraphs.iter().map(|p| text_len(*p)).sum();
+        let p_count = paragraphs.len() as f64;
+
+        // Base score: paragraphs × average text length
+        let p_text_avg = total_text as f64 / p_count.max(1.0);
+        let mut score = p_count * p_text_avg.min(500.0) / 100.0; // Cap per-paragraph to avoid noise
+
+        // Bonus for semantic tags
+        let name = e.value().name();
+        if name == "article" {
+            score *= 1.5;
+        } else if name == "main" {
+            score *= 1.3;
+        }
+
+        // Bonus for content-like class/id
+        if has_content_class(e) {
+            score *= 1.3;
+        }
+
+        score
+    }
+
+    let doc = Html::parse_document(html);
+
+    // Collect all candidate content elements
+    let body_sel = Selector::parse("body").unwrap();
+    let body = doc
+        .select(&body_sel)
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No body element found"))?;
+
+    // Build candidates: all non-strippable elements with at least 2 <p> children
+    let mut candidates: Vec<(f64, ElementRef)> = Vec::new();
+
+    // First, check for article/main tags explicitly
+    for tag in &["article", "main", "[role=main]"] {
+        if let Ok(sel) = Selector::parse(tag) {
+            for el in doc.select(&sel) {
+                let s = score_element(el);
+                if s > 0.0 {
+                    candidates.push((s, el));
+                }
+            }
+        }
+    }
+
+    // If we found semantic content, use the best one
+    if !candidates.is_empty() {
+        candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let (_, best) = &candidates[0];
+        let text = collect_text(*best, STRIP_TAGS);
+        let cleaned = normalize_space(&text);
+        if !cleaned.is_empty() {
+            return Ok(cleaned);
+        }
+    }
+
+    // Fallback: score all div elements with content-like classes
+    candidates.clear();
+    if let Ok(div_sel) = Selector::parse("div") {
+        for el in doc.select(&div_sel) {
+            if has_content_class(el) {
+                let s = score_element(el);
+                if s > 2.0 {
+                    // Minimum threshold
+                    candidates.push((s, el));
+                }
+            }
+        }
+    }
+
+    if !candidates.is_empty() {
+        candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let (_, best) = &candidates[0];
+        let text = collect_text(*best, STRIP_TAGS);
+        let cleaned = normalize_space(&text);
+        if !cleaned.is_empty() {
+            return Ok(cleaned);
+        }
+    }
+
+    // Ultimate fallback: body with tag stripping
+    let text = collect_text(body, STRIP_TAGS);
+    let cleaned = normalize_space(&text);
+    if !cleaned.is_empty() {
         Ok(cleaned)
+    } else {
+        Ok(html_to_text(html))
     }
 }
 
@@ -349,5 +459,140 @@ mod tests {
         let result = extract_readable_content("<html><body><article></article></body></html>");
         assert!(result.is_ok());
         assert!(result.unwrap().trim().is_empty());
+    }
+
+    // --- Content scoring tests ---
+
+    #[test]
+    fn test_readable_finds_content_in_div_without_semantic_tags() {
+        // Many real sites use <div class="post-content"> instead of <article>
+        let html = "\
+<html><body>
+<div class=\"sidebar\">Sidebar link 1 Sidebar link 2 Sidebar link 3</div>
+<div class=\"post-content\">
+<h1>My Blog Post Title</h1>
+<p>This is the first paragraph of the actual blog post content that
+contains meaningful information the user wants to read.</p>
+<p>Here is another paragraph with more detailed content about the topic
+being discussed in this blog post.</p>
+<p>A third paragraph continues the discussion with even more useful
+information for the reader to consume and learn from.</p>
+</div>
+<div class=\"footer\">Copyright 2024 Footer links Privacy policy</div>
+</body></html>";
+        let text = extract_readable_content(&html).unwrap();
+        assert!(
+            text.contains("My Blog Post Title"),
+            "should contain blog title"
+        );
+        assert!(
+            text.contains("first paragraph"),
+            "should contain article body"
+        );
+        assert!(
+            !text.contains("Sidebar link"),
+            "should NOT contain sidebar text"
+        );
+        assert!(
+            !text.contains("Footer links"),
+            "should NOT contain footer text"
+        );
+    }
+
+    #[test]
+    fn test_readable_selects_paragraph_rich_region() {
+        // Pick the region with the most paragraph content, not the first one
+        let html = "\
+<html><body>
+<div class=\"comments\">
+<p>Nice post!</p>
+<p>Thanks for sharing</p>
+</div>
+<div class=\"content\">
+<p>This is the real article content that has many paragraphs of useful
+information that the reader wants to extract and understand.</p>
+<p>Second paragraph with even more detailed analysis of the subject
+matter being discussed in this article.</p>
+<p>Third paragraph continues with additional insights and conclusions
+that wrap up the discussion nicely.</p>
+<p>Fourth paragraph provides supplementary information that rounds out
+the topic coverage.</p>
+</div>
+</body></html>";
+        let text = extract_readable_content(&html).unwrap();
+        assert!(
+            text.contains("real article content"),
+            "should pick content div"
+        );
+        assert!(
+            text.contains("Third paragraph"),
+            "should include later paragraphs"
+        );
+        // The comments section has fewer paragraphs, so should be excluded
+        // if scoring is working properly (comments: 2 short, content: 4 long)
+        let content_len = text.len();
+        assert!(content_len > 100, "should extract substantial content");
+    }
+
+    #[test]
+    fn test_readable_handles_mixed_page() {
+        // A realistic news article layout with various sections
+        let html = "\
+<html><body>
+<nav class=\"main-nav\">Home World Politics Business Technology Sports</nav>
+<header class=\"article-header\">
+<h1>Breaking News: Major Scientific Discovery Announced</h1>
+<p class=\"byline\">By Jane Reporter | June 22, 2026</p>
+</header>
+<div class=\"social-share\">Share on Twitter Share on Facebook</div>
+<div class=\"article-body\">
+<p>Scientists at the Institute for Advanced Study announced today a
+groundbreaking discovery in the field of quantum computing that promises
+to revolutionize how we process information.</p>
+<p>The discovery, published in the journal Nature, demonstrates a new
+method for maintaining quantum coherence at room temperature, a challenge
+that has plagued the field for decades.</p>
+<p>\"This is a transformative moment,\" said Dr. Alice Smith, lead author
+of the study. \"We have overcome what many thought was an insurmountable
+obstacle.\"</p>
+<p>The research team used a novel approach combining topological qubits
+with error-correction codes to achieve stability for over 24 hours at
+standard temperature and pressure conditions.</p>
+<p>Industry experts have called the breakthrough \"profound\" and predict
+it could accelerate the development of practical quantum computers by
+several years, with applications in drug discovery, climate modeling,
+and cryptography.</p>
+</div>
+<aside class=\"related-stories\">
+<h2>Related Articles</h2>
+<ul><li>Quantum Computing Explained</li><li>Top 10 Science Breakthroughs</li></ul>
+</aside>
+<footer class=\"site-footer\">Copyright 2026 Contact Us About Us Privacy Policy</footer>
+</body></html>";
+        let text = extract_readable_content(&html).unwrap();
+        assert!(
+            text.contains("quantum computing"),
+            "should have article body"
+        );
+        assert!(
+            text.contains("groundbreaking discovery"),
+            "should have content"
+        );
+        assert!(
+            text.contains("transformative moment"),
+            "should have quoted content"
+        );
+        assert!(
+            !text.contains("Related Articles"),
+            "should NOT contain aside"
+        );
+        assert!(
+            !text.contains("Share on Twitter"),
+            "should NOT contain social share"
+        );
+        assert!(
+            !text.contains("Privacy Policy"),
+            "should NOT contain footer links"
+        );
     }
 }
