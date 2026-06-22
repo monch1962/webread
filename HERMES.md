@@ -39,7 +39,23 @@ static binary.
 
 ## Installing webread in Hermes
 
-### Option 1: Installed system-wide (recommended)
+### Option 1: Download prebuilt binary (fastest)
+
+Grab the right binary from the
+[Releases page](https://github.com/monch1962/webread/releases),
+no compilation needed:
+
+```bash
+# Linux x86_64
+curl -L https://github.com/monch1962/webread/releases/latest/download/webread-linux-amd64.tar.gz | tar xz
+sudo cp webread-linux-amd64/webread /usr/local/bin/
+
+# macOS Apple Silicon
+curl -L https://github.com/monch1962/webread/releases/latest/download/webread-macos-arm64.tar.gz | tar xz
+sudo cp webread-macos-arm64/webread /usr/local/bin/
+```
+
+### Option 2: Build from source
 
 ```bash
 # Build from source

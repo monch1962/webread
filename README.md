@@ -43,6 +43,30 @@ webread get https://en.wikipedia.org/wiki/Rust --timeout 15 --max-size 5000000
 webread get https://api.example.com --user-agent "my-bot/1.0"
 ```
 
+## Download
+
+Prebuilt binaries for all platforms are available on the
+[Releases page](https://github.com/monch1962/webread/releases).
+
+| Platform | Arch | File |
+|----------|------|------|
+| Linux | x86_64 | `webread-linux-amd64.tar.gz` |
+| Linux | ARM64 | `webread-linux-arm64.tar.gz` |
+| macOS | Intel | `webread-macos-amd64.tar.gz` |
+| macOS | Apple Silicon | `webread-macos-arm64.tar.gz` |
+| Windows | x86_64 | `webread-windows-amd64.zip` |
+
+```bash
+# Example: Linux x86_64
+curl -L https://github.com/monch1962/webread/releases/latest/download/webread-linux-amd64.tar.gz | tar xz
+./webread-linux-amd64/webread --help
+
+# Or install system-wide
+sudo cp webread-linux-amd64/webread /usr/local/bin/
+```
+
+Each release includes SHA256 checksums for verification.
+
 ## Build
 
 ```bash
