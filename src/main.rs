@@ -78,30 +78,8 @@ fn cmd_links(url: &str) -> anyhow::Result<()> {
 
 fn cmd_readable(url: &str) -> anyhow::Result<()> {
     let html = fetch_url(url)?;
-    let doc = scraper::Html::parse_document(&html);
-
-    // Try article, main, or body in order of preference
-    let content = scraper::Selector::parse("article")
-        .ok()
-        .and_then(|s| doc.select(&s).next())
-        .or_else(|| {
-            scraper::Selector::parse("main")
-                .ok()
-                .and_then(|s| doc.select(&s).next())
-        })
-        .or_else(|| {
-            scraper::Selector::parse("body")
-                .ok()
-                .and_then(|s| doc.select(&s).next())
-        });
-
-    if let Some(article) = content {
-        let text: Vec<&str> = article.text().collect();
-        println!("{}", text.join(" "));
-    } else {
-        let text = html_to_text(&html);
-        println!("{text}");
-    }
+    let text = extract_readable_content(&html)?;
+    println!("{text}");
     Ok(())
 }
 

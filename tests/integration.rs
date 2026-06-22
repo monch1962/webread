@@ -95,3 +95,22 @@ fn test_invalid_css_selector() {
         "expected failure for invalid CSS selector"
     );
 }
+
+#[test]
+fn test_readable() {
+    let output = Command::new(webread_binary())
+        .args(["readable", "https://example.com"])
+        .output()
+        .expect("failed to run webread readable");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "webread readable failed: {stdout}");
+    assert!(
+        stdout.contains("Example Domain"),
+        "expected 'Example Domain' in readable output"
+    );
+    // Should be clean text, no HTML tags
+    assert!(
+        !stdout.contains("<h1>"),
+        "readable should not contain HTML tags"
+    );
+}
