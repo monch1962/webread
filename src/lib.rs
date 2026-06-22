@@ -6,9 +6,39 @@ const STRIP_TAGS: &[&str] = &["nav", "header", "footer", "aside", "script", "sty
 
 /// Fetch a URL and return the HTML body as a String.
 pub fn fetch_url(url: &str) -> anyhow::Result<String> {
-    let response = ureq::get(url).call()?;
+    let response = ureq::get(url).header("User-Agent", &user_agent()).call()?;
     let body = response.into_body().read_to_string()?;
     Ok(body)
+}
+
+/// Return a compatible User-Agent string to avoid blocking.
+pub fn user_agent() -> String {
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15".to_string()
+}
+
+#[cfg(test)]
+mod fetch_tests {
+    use super::*;
+
+    #[test]
+    fn test_user_agent_format() {
+        let ua = user_agent();
+        assert!(ua.contains("Mozilla/5.0"), "UA should look like a browser");
+        assert!(ua.contains("AppleWebKit/"), "UA should contain AppleWebKit");
+        assert!(ua.contains("Safari/"), "UA should contain Safari token");
+    }
+
+    #[test]
+    fn test_fetch_url_unsupported_scheme() {
+        let result = fetch_url("ftp://example.com/");
+        assert!(result.is_err(), "ftp should fail");
+    }
+
+    #[test]
+    fn test_fetch_url_bad_hostname() {
+        let result = fetch_url("https://this-hostname-does-not-exist-hopefully.example/");
+        assert!(result.is_err(), "bad hostname should fail");
+    }
 }
 
 /// Walk the element tree and collect text content, optionally skipping
