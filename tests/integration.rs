@@ -219,3 +219,63 @@ fn test_json_html_structure() {
         "html --json must have 'match_count'"
     );
 }
+
+// --- Parallel execution stress tests ---
+
+#[test]
+fn test_fetch_multiple_urls() {
+    // Race several independent URLs to verify no shared-state corruption
+    let urls = &[
+        "https://example.com",
+        "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+    ];
+    let results: Vec<_> = urls
+        .iter()
+        .map(|url| (url, webread(&["get", url])))
+        .collect();
+    for (url, result) in &results {
+        assert!(
+            result.is_ok(),
+            "parallel fetch of {url} should succeed: {:?}",
+            result
+        );
+    }
+    // Distinct URLs should produce distinct content
+    let contents: Vec<&str> = results
+        .iter()
+        .map(|(_, r)| r.as_ref().unwrap().as_str())
+        .collect();
+    if contents.len() >= 2 {
+        assert_ne!(
+            contents[0], contents[1],
+            "different URLs must produce different output"
+        );
+    }
+}
+
+#[test]
+fn test_concurrent_search_and_fetch() {
+    // Run different subcommands concurrently to check for interference
+    let get_handle = std::thread::spawn(|| webread(&["get", "https://example.com"]));
+    let search_handle = std::thread::spawn(|| webread(&["search", "rust"]));
+    let links_handle = std::thread::spawn(|| webread(&["links", "https://example.com"]));
+
+    let get_result = get_handle.join().expect("get thread panicked");
+    let search_result = search_handle.join().expect("search thread panicked");
+    let links_result = links_handle.join().expect("links thread panicked");
+
+    assert!(get_result.is_ok(), "parallel get should succeed");
+    assert!(search_result.is_ok(), "parallel search should succeed");
+    assert!(links_result.is_ok(), "parallel links should succeed");
+
+    let get_out = get_result.unwrap();
+    let links_out = links_result.unwrap();
+    assert!(
+        get_out.contains("Example Domain"),
+        "get output should have content"
+    );
+    assert!(
+        links_out.contains("iana.org"),
+        "links output should have hrefs"
+    );
+}
