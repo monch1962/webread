@@ -255,6 +255,34 @@ fn test_help_includes_all_subcommands() {
 // --- New feature integration tests ---
 
 #[test]
+fn test_section_flag_output() {
+    let out = webread(&["get", "https://example.com", "--section", "h1"]).unwrap();
+    assert!(out.contains("Example Domain"), "--section should include heading text");
+}
+
+#[test]
+fn test_section_flag_json() {
+    let out = webread(&["get", "https://example.com", "--section", "h1", "--json"]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v.get("section").is_some(), "--section --json must have 'section' field");
+    assert_eq!(v["section"], "h1", "section field should report the selector used");
+    assert!(v.get("text").is_some(), "--section --json must have 'text' field");
+}
+
+#[test]
+fn test_section_help_mentions_workflow() {
+    let out = webread(&["get", "--help"]).unwrap();
+    assert!(
+        out.contains("--section"),
+        "get --help must list --section flag"
+    );
+    assert!(
+        out.contains("heading selectors"),
+        "get --help must reference finding heading selectors with --outline"
+    );
+}
+
+#[test]
 fn test_compact_mode_output() {
     let out = webread(&["get", "https://example.com", "--compact"]).unwrap();
     assert!(out.contains("Example Domain"));

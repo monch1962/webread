@@ -50,6 +50,12 @@ webread get https://example.com --proxy http://proxy.corp:8080
 # Compact output (token-efficient, -10-30% tokens on large pages)
 webread get https://en.wikipedia.org/wiki/Rust --compact
 
+# Section extraction (heading + content, ~90% token savings)
+webread get 'https://en.wikipedia.org/wiki/Rust_(programming_language)' --section 'h3#Macros'
+
+# Section extraction as JSON
+webread get 'https://en.wikipedia.org/wiki/Rust_(programming_language)' --section 'h3#Macros' --json
+
 # HEAD request (check status/length without downloading body)
 webread get https://example.com --method HEAD
 
@@ -139,7 +145,7 @@ All commands support these safety flags for resource-constrained systems:
 | `--post-data <body>` | — | Body data for POST requests |
 | `--compact` | off | Token-efficient output (aggressive whitespace compression) |
 | `--meta` | off | Structured metadata mode: title + description + OG tags + canonical + charset + language + link/char count (~99% token saving) |
-| `--outline` | off | Heading hierarchy mode: title + h1-h6 tree + link/char count (~98% token saving) |
+| `--outline` | off | Heading hierarchy with unique CSS selectors: title + `h1 [h1#id.class]:` text tree + link/char count (~98% token saving). Use selectors from output with `--section`. |
 | `--json` | off | Machine-parseable structured output |
 
 Plus built-in:
@@ -205,8 +211,8 @@ cargo clippy      # Zero warnings
 
 | Suite | Count | Covers |
 |-------|-------|--------|
-| Unit (lib) | 75 | URL decoding, text extraction, readability scoring, fetch errors, config parsing, URL resolution, content-type checks, retry logic, user-agent override, proxy config, agent building, compact mode, meta mode, outline mode, error codes (13 variants), config validation, HTTP method, link text, search snippets |
-| Integration | 39 | CLI smoke tests, JSON output structure, JSON metadata fields, compact mode, meta mode, outline mode, --help agent-discovery (4), HEAD method, links with text, search snippets, cross-site (Wikipedia, GitHub, arXiv, HN, dev.to), parallel stress, URL list validation |
+| Unit (lib) | 80 | URL decoding, text extraction, readability scoring, fetch errors, config parsing, URL resolution, content-type checks, retry logic, user-agent override, proxy config, agent building, compact mode, meta mode, outline mode, CSS selector generation, section extraction, error codes (13 variants), config validation, HTTP method, link text, search snippets |
+| Integration | 42 | CLI smoke tests, JSON output structure, JSON metadata fields, compact mode, meta mode, outline mode, section mode, --help agent-discovery (4), HEAD method, links with text, search snippets, cross-site (Wikipedia, GitHub, arXiv, HN, dev.to), parallel stress, URL list validation |
 
 Cross-site integration tests validate against real websites with
 `std::thread::spawn` for concurrent execution to verify no shared-state

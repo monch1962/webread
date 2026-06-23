@@ -214,6 +214,7 @@ pub struct FetchOptions {
     pub compact: bool,
     pub meta: bool,
     pub outline: bool,
+    pub section: Option<String>,
     pub post_body: Option<String>,
 }
 
@@ -230,6 +231,7 @@ impl Default for FetchOptions {
             compact: false,
             meta: false,
             outline: false,
+            section: None,
             post_body: None,
         }
     }
@@ -963,6 +965,56 @@ pub fn generate_outline(html: &str) -> OutlineResult {
     let total_chars = extract_readable_content(html).unwrap_or_default().len();
     OutlineResult { title, headings, link_count, total_chars }
 }
+
+/// Extract a heading and its section content from HTML.
+/// Finds the element matching `selector`, then walks siblings until a heading
+/// of the same or higher level is found. Returns the heading text + content.
+/// Errors if the selector doesn't match a heading element (h1-h6).
+pub fn extract_section(html: &str, selector: &str) -> anyhow::Result<String> {
+    use scraper::ElementRef;
+    let doc = scraper::Html::parse_document(html);
+    let sel = scraper::Selector::parse(selector)
+        .map_err(|_| anyhow::anyhow!("Invalid CSS selector: {selector}"))?;
+    let el = doc.select(&sel).next()
+        .ok_or_else(|| anyhow::anyhow!("No element found for selector: {selector}"))?;
+
+    let tag = el.value().name();
+    let heading_level = tag.strip_prefix('h')
+        .and_then(|s| s.parse::<u8>().ok())
+        .filter(|&lvl| (1..=6).contains(&lvl))
+        .ok_or_else(|| anyhow::anyhow!("Selector '{selector}' matched element <{tag}>, not a heading (h1-h6)"))?;
+
+    let heading_text: String = el.text().collect::<Vec<_>>().join(" ").trim().to_string();
+    let mut content_parts: Vec<String> = Vec::new();
+
+    let mut next = el.next_sibling();
+    while let Some(node) = next {
+        if let Some(sibling_el) = ElementRef::wrap(node) {
+            let sibling_tag = sibling_el.value().name();
+            if let Some(sibling_level) = sibling_tag.strip_prefix('h')
+                .and_then(|s| s.parse::<u8>().ok())
+                .filter(|&lvl| (1..=6).contains(&lvl))
+            {
+                if sibling_level <= heading_level {
+                    break;
+                }
+            }
+            let text: String = sibling_el.text().collect::<Vec<_>>().join(" ").trim().to_string();
+            if !text.is_empty() {
+                content_parts.push(text);
+            }
+        }
+        next = node.next_sibling();
+    }
+
+    let mut result = heading_text;
+    if !content_parts.is_empty() {
+        result.push('\n');
+        result.push_str(&content_parts.join("\n"));
+    }
+    Ok(result)
+}
+
 pub fn extract_readable_content(html: &str) -> anyhow::Result<String> {
     fn text_len(e: ElementRef) -> usize { e.text().collect::<String>().trim().len() }
     fn has_content_class(e: ElementRef) -> bool {
@@ -1186,5 +1238,48 @@ scoring algorithm selects this div over the fallback body text extraction.</p>
         let compact = html_to_text_with_options(html, true);
         assert_eq!(normal, "Hello world");
         assert_eq!(compact, "Hello world");
+    }
+
+    // --- extract_section tests ---
+
+    #[test]
+    fn test_extract_section_basic() {
+        let html = "<html><body><h3 id=\"Macros\">Macros</h3><p>Macros are powerful.</p><p>They do metaprogramming.</p><h3 id=\"Unsafe\">Unsafe</h3><p>Unsafe code.</p></body></html>";
+        let result = extract_section(html, "h3#Macros").unwrap();
+        assert!(result.contains("Macros"), "should include heading text");
+        assert!(result.contains("Macros are powerful."), "should include content");
+        assert!(result.contains("metaprogramming"), "should include all paragraphs");
+        assert!(!result.contains("Unsafe"), "should NOT include next section");
+    }
+
+    #[test]
+    fn test_extract_section_stops_at_higher_heading() {
+        let html = "<html><body><h3 id=\"sub\">Sub</h3><p>Content</p><h2 id=\"main\">Main</h2><p>Other</p></body></html>";
+        let result = extract_section(html, "h3#sub").unwrap();
+        assert!(result.contains("Sub"), "should include heading");
+        assert!(result.contains("Content"), "should include content");
+        assert!(!result.contains("Main"), "should stop before h2 (higher level)");
+    }
+
+    #[test]
+    fn test_extract_section_runs_to_end() {
+        let html = "<html><body><h2 id=\"last\">Last</h2><p>Final content.</p></body></html>";
+        let result = extract_section(html, "h2#last").unwrap();
+        assert!(result.contains("Last"));
+        assert!(result.contains("Final content"));
+    }
+
+    #[test]
+    fn test_extract_section_invalid_selector() {
+        let html = "<html><body><p>No headings here</p></body></html>";
+        let result = extract_section(html, "h3#nonexistent");
+        assert!(result.is_err(), "should error on non-matching selector");
+    }
+
+    #[test]
+    fn test_extract_section_ignores_non_heading() {
+        let html = "<html><body><div id=\"not-heading\">Not a heading</div><p>Content</p></body></html>";
+        let result = extract_section(html, "div#not-heading");
+        assert!(result.is_err(), "should error on non-heading selector");
     }
 }
