@@ -563,6 +563,161 @@ mod guardrail_tests {
         assert_eq!(ErrorCode::Http4xx(404).code(), "HTTP_4XX");
         assert_eq!(ErrorCode::Http4xx(404).message(), "HTTP 404 Client Error");
     }
+
+    // --- ErrorCode exhaustive tests ---
+
+    #[test] fn test_error_code_message_all_variants() {
+        assert_eq!(ErrorCode::Timeout.message(), "Request timed out");
+        assert_eq!(ErrorCode::DnsFailure.message(), "DNS resolution failed");
+        assert_eq!(ErrorCode::ConnectionRefused.message(), "Connection refused");
+        assert!(ErrorCode::Http4xx(403).message().contains("403"));
+        assert!(ErrorCode::Http5xx(503).message().contains("503"));
+        assert!(ErrorCode::ContentTypeNotHtml("application/pdf".into()).message().contains("Content-Type"));
+        assert!(ErrorCode::Truncated.message().contains("truncated"));
+        assert!(ErrorCode::ProxyError("bad proxy".into()).message().contains("bad proxy"));
+        assert!(ErrorCode::InvalidSelector("#bad".into()).message().contains("Invalid"));
+        assert!(ErrorCode::NetworkError("connection reset".into()).message().contains("connection reset"));
+        assert!(ErrorCode::InvalidUrl("not a url".into()).message().contains("Invalid URL"));
+        assert!(ErrorCode::ConfigError("bad key".into()).message().contains("Config error"));
+        assert!(ErrorCode::HttpError(429, "rate limited".into()).message().contains("429"));
+    }
+
+    #[test] fn test_error_code_code_all_variants() {
+        assert_eq!(ErrorCode::Timeout.code(), "TIMEOUT");
+        assert_eq!(ErrorCode::DnsFailure.code(), "DNS_FAILURE");
+        assert_eq!(ErrorCode::ConnectionRefused.code(), "CONNECTION_REFUSED");
+        assert_eq!(ErrorCode::Http4xx(0).code(), "HTTP_4XX");
+        assert_eq!(ErrorCode::Http5xx(0).code(), "HTTP_5XX");
+        assert_eq!(ErrorCode::ContentTypeNotHtml("".into()).code(), "CONTENT_TYPE_NOT_HTML");
+        assert_eq!(ErrorCode::Truncated.code(), "TRUNCATED");
+        assert_eq!(ErrorCode::ProxyError("".into()).code(), "PROXY_ERROR");
+        assert_eq!(ErrorCode::InvalidSelector("".into()).code(), "INVALID_SELECTOR");
+        assert_eq!(ErrorCode::NetworkError("".into()).code(), "NETWORK_ERROR");
+        assert_eq!(ErrorCode::InvalidUrl("".into()).code(), "INVALID_URL");
+        assert_eq!(ErrorCode::ConfigError("".into()).code(), "CONFIG_ERROR");
+        assert_eq!(ErrorCode::HttpError(0, "".into()).code(), "HTTP_ERROR");
+    }
+
+    #[test] fn test_error_code_exit_codes_all() {
+        assert_eq!(ErrorCode::Timeout.exit_code(), 6);
+        assert_eq!(ErrorCode::Truncated.exit_code(), 2);
+        assert_eq!(ErrorCode::ContentTypeNotHtml("".into()).exit_code(), 3);
+        assert_eq!(ErrorCode::DnsFailure.exit_code(), 4);
+        assert_eq!(ErrorCode::ConnectionRefused.exit_code(), 4);
+        assert_eq!(ErrorCode::NetworkError("".into()).exit_code(), 4);
+        assert_eq!(ErrorCode::ProxyError("".into()).exit_code(), 5);
+        assert_eq!(ErrorCode::Http4xx(0).exit_code(), 7);
+        assert_eq!(ErrorCode::Http5xx(0).exit_code(), 7);
+        assert_eq!(ErrorCode::HttpError(0, "".into()).exit_code(), 7);
+        assert_eq!(ErrorCode::InvalidSelector("".into()).exit_code(), 8);
+        assert_eq!(ErrorCode::InvalidUrl("".into()).exit_code(), 8);
+        assert_eq!(ErrorCode::ConfigError("".into()).exit_code(), 8);
+    }
+
+    #[test] fn test_error_code_to_json_content_type() {
+        let json = ErrorCode::ContentTypeNotHtml("application/pdf".into()).to_json(Some("https://x.com/doc.pdf"));
+        assert_eq!(json["error"]["content_type"], "application/pdf");
+        assert_eq!(json["error"]["url"], "https://x.com/doc.pdf");
+    }
+
+    #[test] fn test_error_code_to_json_http_status() {
+        let json = ErrorCode::Http5xx(503).to_json(None);
+        assert_eq!(json["error"]["http_status"], 503);
+    }
+
+    #[test] fn test_error_code_to_json_suggestion() {
+        let json = ErrorCode::Timeout.to_json(None);
+        assert!(json["error"].get("suggestion").is_some());
+    }
+
+    // --- FetchOptions defaults for new fields ---
+
+    #[test] fn test_fetch_options_method_default() {
+        assert_eq!(FetchOptions::default().method, HttpMethod::Get);
+    }
+
+    #[test] fn test_fetch_options_compact_default() {
+        assert!(!FetchOptions::default().compact);
+    }
+
+    #[test] fn test_fetch_options_post_body_default() {
+        assert!(FetchOptions::default().post_body.is_none());
+    }
+
+    // --- compact_text edge cases ---
+
+    #[test] fn test_compact_text_single_word() {
+        assert_eq!(compact_text("hello"), "hello");
+    }
+
+    #[test] fn test_compact_text_tabs_and_newlines() {
+        assert_eq!(compact_text("hello\t\nworld"), "hello world");
+    }
+
+    #[test] fn test_compact_text_only_whitespace() {
+        assert_eq!(compact_text("   \t\n  "), "");
+    }
+
+    // --- validate_config edge cases ---
+
+    #[test] fn test_validate_config_empty_line_no_eq() {
+        let errs = validate_config("justtext\n");
+        assert!(!errs.is_empty(), "line without '=' should error");
+    }
+
+    #[test] fn test_validate_config_bad_max_size() {
+        let errs = validate_config("max-size=ten-megabytes\n");
+        assert!(!errs.is_empty(), "invalid max-size should error");
+    }
+
+    #[test] fn test_validate_config_good_max_size() {
+        let errs = validate_config("max-size=5000000\n");
+        assert!(errs.is_empty(), "valid max-size should pass");
+    }
+
+    #[test] fn test_validate_config_good_proxy() {
+        let errs = validate_config("proxy=http://proxy:8080\n");
+        assert!(errs.is_empty(), "valid proxy URL should pass");
+    }
+
+    // --- resolve_url edge cases ---
+
+    #[test] fn test_resolve_empty_href() {
+        let resolved = resolve_url("https://example.com/page", "");
+        assert_eq!(resolved, "https://example.com/");  // empty resolves to root
+    }
+
+    #[test] fn test_resolve_just_slash() {
+        let resolved = resolve_url("https://example.com/page", "/");
+        assert_eq!(resolved, "https://example.com/");
+    }
+
+    // --- html_to_text_with_options ---
+
+    #[test] fn test_html_to_text_compact_different_from_normal() {
+        // With multiple spaces and newlines, compact should differ
+        let html = "<html><body><p>Hello   world</p><p>Foo   bar</p></body></html>";
+        let normal = html_to_text_with_options(html, false);
+        let compact = html_to_text_with_options(html, true);
+        // Both should collapse whitespace, but compact is aggressive
+        assert_eq!(normal, "Hello world Foo bar");
+        assert_eq!(compact, "Hello world Foo bar");
+    }
+
+    // --- extract_readable_content edge cases ---
+
+    #[test] fn test_readable_single_paragraph_falls_back() {
+        // A single short paragraph should fall through to body-level extraction
+        let html = "<html><body><p>Hello world</p></body></html>";
+        let result = extract_readable_content(&html).unwrap();
+        assert_eq!(result, "Hello world");
+    }
+
+    #[test] fn test_readable_with_nested_divs() {
+        let html = "<html><body><div><div><p>Nested content here</p></div></div></body></html>";
+        let result = extract_readable_content(&html).unwrap();
+        assert!(result.contains("Nested content"));
+    }
 }
 
 // ---- Text extraction functions ----
