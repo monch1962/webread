@@ -987,19 +987,57 @@ pub fn extract_section(html: &str, selector: &str) -> anyhow::Result<String> {
     let heading_text: String = el.text().collect::<Vec<_>>().join(" ").trim().to_string();
     let mut content_parts: Vec<String> = Vec::new();
 
-    let mut next = el.next_sibling();
-    while let Some(node) = next {
-        if let Some(sibling_el) = ElementRef::wrap(node) {
-            let sibling_tag = sibling_el.value().name();
-            if let Some(sibling_level) = sibling_tag.strip_prefix('h')
-                .and_then(|s| s.parse::<u8>().ok())
-                .filter(|&lvl| (1..=6).contains(&lvl))
-            {
-                if sibling_level <= heading_level {
-                    break;
+    // Check if an ElementRef is or contains a heading of level <= max_level.
+    // Handles both plain h1-h6 elements and wrapper divs (Wikipedia pattern).
+    fn el_is_heading(el_ref: &ElementRef, max_level: u8) -> bool {
+        let tag_name = el_ref.value().name();
+        if let Some(lvl) = tag_name.strip_prefix('h')
+            .and_then(|s| s.parse::<u8>().ok())
+            .filter(|&l| (1..=6).contains(&l))
+        {
+            return lvl <= max_level;
+        }
+        for child in el_ref.children() {
+            if let Some(child_el) = ElementRef::wrap(child) {
+                let child_tag = child_el.value().name();
+                if let Some(lvl) = child_tag.strip_prefix('h')
+                    .and_then(|s| s.parse::<u8>().ok())
+                    .filter(|&l| (1..=6).contains(&l))
+                {
+                    return lvl <= max_level;
                 }
             }
-            let text: String = sibling_el.text().collect::<Vec<_>>().join(" ").trim().to_string();
+        }
+        false
+    }
+
+    // Determine start position: if heading is in a wrapper div/section/li,
+    // walk siblings of the wrapper. Otherwise walk siblings of the heading itself.
+    let wrapped = el.parent()
+        .and_then(|p| ElementRef::wrap(p))
+        .map(|pe| {
+            let n = pe.value().name();
+            n == "div" || n == "section" || n == "li"
+        })
+        .unwrap_or(false);
+
+    let mut next = if wrapped {
+        el.parent().and_then(|p| p.next_sibling())
+    } else {
+        el.next_sibling()
+    };
+
+    while let Some(node) = next {
+        if let Some(sibling_el) = ElementRef::wrap(node) {
+            if el_is_heading(&sibling_el, heading_level) {
+                break;
+            }
+            let text: String = sibling_el
+                .text()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .trim()
+                .to_string();
             if !text.is_empty() {
                 content_parts.push(text);
             }
@@ -1013,9 +1051,7 @@ pub fn extract_section(html: &str, selector: &str) -> anyhow::Result<String> {
         result.push_str(&content_parts.join("\n"));
     }
     Ok(result)
-}
-
-pub fn extract_readable_content(html: &str) -> anyhow::Result<String> {
+}pub fn extract_readable_content(html: &str) -> anyhow::Result<String> {
     fn text_len(e: ElementRef) -> usize { e.text().collect::<String>().trim().len() }
     fn has_content_class(e: ElementRef) -> bool {
         let id = e.value().attr("id").unwrap_or("");
