@@ -238,6 +238,25 @@ To filter HTML: webread html <url> --selector 'h1'
 To get links as JSON: webread links <url> --json
 ```
 
+### Section extraction (token-efficient)
+```
+To extract a heading and its section content without fetching the full page:
+
+Step 1 — Find heading selectors:
+  webread get <url> --outline
+  Shows: h3 [h3#Macros]: Macros
+
+Step 2 — Extract that section in one call:
+  webread get <url> --section 'h3#Macros'
+  Returns heading text + content until the next heading of same level.
+
+JSON mode:
+  webread get <url> --section 'h3#Macros' --json
+
+Agent pattern: --outline (~20 tokens) + --section (~100-200 tokens)
+= ~200 tokens total, ~10x cheaper than fetching and searching full text.
+```
+
 ## Performance Benchmarks
 
 Timings on a single page fetch:

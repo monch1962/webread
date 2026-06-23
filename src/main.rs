@@ -54,8 +54,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Fetch a URL and print clean text
-    Get { url: String },
+    /// Fetch a URL and print clean text. Use --section SELECTOR to extract just a heading and its content.
+    Get {
+        url: String,
+        /// Extract heading + content under it (e.g. "h3#Macros"). Use --outline first to find heading selectors.
+        #[arg(long)]
+        section: Option<String>,
+    },
     /// Fetch raw HTML, optionally filtered by CSS selector
     Html {
         url: String,
@@ -123,7 +128,7 @@ fn main() -> ! {
     }
 
     let result = match cli.command {
-        Command::Get { url } => cmd_get(&url, json, &opts),
+        Command::Get { url, section } => cmd_get(&url, section.as_deref(), json, &opts),
         Command::Html { url, selector } => cmd_html(&url, selector.as_deref(), json, &opts),
         Command::Links { url } => cmd_links(&url, json, &opts),
         Command::Readable { url } => cmd_readable(&url, json, &opts),
@@ -298,8 +303,28 @@ fn add_metadata(
     obj.insert("error".into(), serde_json::Value::Null);
 }
 
-fn cmd_get(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Option<ErrorCode>)> {
+fn cmd_get(url: &str, section: Option<&str>, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Option<ErrorCode>)> {
     let (html, result) = fetch_with_opts(url, opts)?;
+
+    if let Some(sel) = section {
+        let text = extract_section(&html, sel).map_err(|e| {
+            let err = ErrorCode::InvalidSelector(format!("{e}"));
+            (err.exit_code(), Some(err))
+        })?;
+        if json {
+            let mut extra = serde_json::json!({});
+            add_metadata(&mut extra, &result, opts, url);
+            let char_count = text.len();
+            let obj = extra.as_object_mut().unwrap();
+            obj.insert("section".into(), serde_json::Value::String(sel.to_string()));
+            obj.insert("text".into(), serde_json::Value::String(text));
+            obj.insert("char_count".into(), serde_json::Value::Number(serde_json::Number::from(char_count as u64)));
+            println!("{extra}");
+        } else {
+            println!("{text}");
+        }
+        return Ok(handle_truncated(&result, opts));
+    }
 
     if opts.meta {
         let m = extract_metadata(&html);
