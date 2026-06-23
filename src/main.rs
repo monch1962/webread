@@ -165,6 +165,20 @@ fn fetch_with_opts(url: &str, opts: &FetchOptions) -> Result<(String, FetchResul
     }
 }
 
+
+
+/// Return exit code, printing truncation warning if body was truncated.
+fn handle_truncated(result: &FetchResult, opts: &FetchOptions) -> i32 {
+    if result.truncated {
+        eprintln!(
+            "[truncated] Response exceeded --max-size ({} bytes). Use --max-size 0 for unlimited.",
+            opts.max_body_bytes
+        );
+        ErrorCode::Truncated.exit_code()
+    } else {
+        0
+    }
+}
 fn cmd_config_check(cfg: &std::collections::HashMap<String, String>) -> i32 {
     let path = dirs_config_path().join("webread").join("config");
     let content = match std::fs::read_to_string(&path) {
@@ -193,7 +207,6 @@ fn cmd_config_check(cfg: &std::collections::HashMap<String, String>) -> i32 {
         1
     }
 }
-
 
 
 fn add_metadata(extra: &mut serde_json::Value, result: &FetchResult, opts: &FetchOptions, url: &str) {
@@ -233,12 +246,7 @@ fn cmd_get(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Opti
         println!("{text}");
     }
 
-    if result.truncated {
-        eprintln!("[truncated] Response exceeded --max-size ({} bytes). Use --max-size 0 for unlimited.", opts.max_body_bytes);
-        Ok(ErrorCode::Truncated.exit_code())
-    } else {
-        Ok(0)
-    }
+    Ok(handle_truncated(&result, opts))
 }
 
 fn cmd_html(
@@ -289,12 +297,7 @@ fn cmd_html(
         }
     }
 
-    if result.truncated {
-        eprintln!("[truncated] Response exceeded --max-size ({} bytes).", opts.max_body_bytes);
-        Ok(ErrorCode::Truncated.exit_code())
-    } else {
-        Ok(0)
-    }
+    Ok(handle_truncated(&result, opts))
 }
 
 fn cmd_links(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Option<ErrorCode>)> {
@@ -339,12 +342,7 @@ fn cmd_links(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Op
         }
     }
 
-    if result.truncated {
-        eprintln!("[truncated] Response exceeded --max-size ({} bytes).", opts.max_body_bytes);
-        Ok(ErrorCode::Truncated.exit_code())
-    } else {
-        Ok(0)
-    }
+    Ok(handle_truncated(&result, opts))
 }
 
 fn cmd_readable(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Option<ErrorCode>)> {
@@ -366,12 +364,7 @@ fn cmd_readable(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32,
         println!("{text}");
     }
 
-    if result.truncated {
-        eprintln!("[truncated] Response exceeded --max-size ({} bytes).", opts.max_body_bytes);
-        Ok(ErrorCode::Truncated.exit_code())
-    } else {
-        Ok(0)
-    }
+    Ok(handle_truncated(&result, opts))
 }
 
 fn cmd_search(query: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Option<ErrorCode>)> {
@@ -380,9 +373,7 @@ fn cmd_search(query: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32,
         let err = ErrorCode::ProxyError(format!("{e}"));
         (err.exit_code(), Some(err))
     })?;
-    let ua = opts.user_agent.as_deref().unwrap_or(
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15"
-    );
+    let ua = opts.user_agent.as_deref().unwrap_or(DEFAULT_UA);
     let response = match agent
         .get(url)
         .query("q", query)
@@ -391,7 +382,7 @@ fn cmd_search(query: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32,
     {
         Ok(r) => r,
         Err(e) => {
-            let err_code = classify_error(&e, url);
+            let err_code = classify_error(&e);
             return Err((err_code.exit_code(), Some(err_code)));
         }
     };

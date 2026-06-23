@@ -213,7 +213,7 @@ in milliseconds and uses minimal RAM.
 # Smoke test
 webread get https://example.com
 
-# Full test suite (77 tests)
+# Full test suite (104 tests)
 cd ~/Projects/webread && cargo test
 
 # Batch test across 302 websites (parallel, ~2 minutes)

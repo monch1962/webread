@@ -12,9 +12,10 @@ webread links <url>                      # Enumerate all hrefs on a page (with l
 webread readable <url>                   # Article extraction (readability mode)
 webread html <url> [--selector 'css']    # Raw HTML with optional CSS filter
 webread config-check                     # Validate config file
-```
 
-All commands support `--json` for structured output.
+All commands support --json, --timeout, --max-size, --proxy, --user-agent,
+--compact, --method, and --post-data flags.
+```
 
 ## Examples
 
@@ -45,6 +46,21 @@ webread get https://api.example.com --user-agent "my-bot/1.0"
 
 # Via HTTP proxy (also respects ALL_PROXY, HTTPS_PROXY, HTTP_PROXY env vars)
 webread get https://example.com --proxy http://proxy.corp:8080
+
+# Compact output (token-efficient, -10-30% tokens on large pages)
+webread get https://en.wikipedia.org/wiki/Rust --compact
+
+# HEAD request (check status/length without downloading body)
+webread get https://example.com --method HEAD
+
+# POST request with body data
+webread get https://httpbin.org/post --method POST --post-data "key=value"
+
+# Validate config file
+webread config-check
+
+# With structured error output for agentic use
+WR_JSON_ERROR=1 webread get https://example.com --json
 ```
 
 ## Download
@@ -86,7 +102,7 @@ src/
 ├── lib.rs      # Core logic: fetch, extract, score, resolve, search, decode, config
 └── main.rs     # CLI entry point with clap subcommands, config file loading
 tests/
-├── integration.rs  # 25 integration tests (smoke + cross-site + JSON + parallel + URL validation)
+├── integration.rs  # 31 integration tests (smoke + cross-site + JSON + parallel + URL validation + new features)
 └── batch_test.py   # Batch test across 302 websites (parallel, 12 workers)
 ```
 
@@ -117,6 +133,30 @@ Plus built-in:
 - **Auto-retry**: one retry on transient errors (502, 503, timeout)
 - **URL resolution**: relative links (`/page`, `../other`) resolved to absolute
 
+## Exit Codes (Agentic Use)
+
+Exit codes distinguish error types for programmatic (agent) consumers:
+
+| Code | Meaning | Trigger |
+|------|---------|--------|
+| 0 | Success | Everything OK |
+| 2 | Truncated | Response exceeded `--max-size` |
+| 3 | Content-Type not HTML | PDF, image, or other binary response |
+| 4 | Network error | DNS failure, connection refused, timeout |
+| 5 | Proxy error | Invalid proxy URL or proxy unavailable |
+| 6 | HTTP error | 4xx client or 5xx server error |
+| 8 | Config/input error | Invalid flags, bad config file, invalid selector |
+
+Set `WR_JSON_ERROR=1` to get machine-parseable error JSON on stdout:
+
+```json
+{"error": {"code": "TIMEOUT", "message": "Request timed out", "url": "..."}}
+```
+
+Error codes: `TIMEOUT`, `DNS_FAILURE`, `CONNECTION_REFUSED`, `HTTP_4XX`,
+`HTTP_5XX`, `CONTENT_TYPE_NOT_HTML`, `TRUNCATED`, `PROXY_ERROR`,
+`NETWORK_ERROR`, `INVALID_URL`, `CONFIG_ERROR`, `HTTP_ERROR`
+
 ## Configuration File
 
 Create `~/.config/webread/config` with key=value lines:
@@ -145,14 +185,14 @@ Comments (`#`) and blank lines are ignored. CLI flags override config file value
 ## Test Suite
 
 ```
-cargo test        # 77 tests (52 unit + 25 integration, parallel by default)
+cargo test        # 104 tests (73 unit + 31 integration, parallel by default)
 cargo clippy      # Zero warnings
 ```
 
 | Suite | Count | Covers |
 |-------|-------|--------|
-| Unit (lib) | 52 | URL decoding, text extraction, readability scoring, fetch errors, config parsing, URL resolution, content-type checks, retry logic, user-agent override, proxy config, agent building, compact mode, error codes, config validation |
-| Integration | 25 | CLI smoke tests, JSON output structure, cross-site (Wikipedia, GitHub, arXiv, HN, dev.to), parallel stress, URL list validation |
+| Unit (lib) | 73 | URL decoding, text extraction, readability scoring, fetch errors, config parsing, URL resolution, content-type checks, retry logic, user-agent override, proxy config, agent building, compact mode, error codes (13 variants), config validation, HTTP method, link text, search snippets |
+| Integration | 31 | CLI smoke tests, JSON output structure, JSON metadata fields, compact mode, HEAD method, links with text, search snippets, cross-site (Wikipedia, GitHub, arXiv, HN, dev.to), parallel stress, URL list validation |
 
 Cross-site integration tests validate against real websites with
 `std::thread::spawn` for concurrent execution to verify no shared-state

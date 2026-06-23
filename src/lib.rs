@@ -6,7 +6,7 @@ use std::time::Duration;
 const STRIP_TAGS: &[&str] = &["nav", "header", "footer", "aside", "script", "style"];
 
 /// Default User-Agent string.
-const DEFAULT_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15";
+pub const DEFAULT_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15";
 
 /// Machine-parseable error codes for agentic use.
 #[derive(Clone, Debug, PartialEq)]
@@ -272,7 +272,7 @@ pub fn build_agent(opts: &FetchOptions) -> anyhow::Result<ureq::Agent> {
 }
 
 /// Classify an error from ureq into an ErrorCode for structured output.
-pub fn classify_error(err: &ureq::Error, _url: &str) -> ErrorCode {
+pub fn classify_error(err: &ureq::Error) -> ErrorCode {
     let msg = format!("{err:#}");
     if msg.contains("timed out") || msg.contains("timeout") || msg.contains("Timeout") {
         return ErrorCode::Timeout;
