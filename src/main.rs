@@ -32,9 +32,13 @@ struct Cli {
     #[arg(long, global = true)]
     compact: bool,
 
-    /// Summary mode: return only title + first ~200 chars (saves ~95% tokens)
+    /// Page outline mode: emit heading hierarchy (h1-h6) only. Cheapest after --meta. Saves ~98% tokens.
     #[arg(long, global = true)]
-    summary: bool,
+    outline: bool,
+
+    /// Cheapest mode: emit structured meta tags only (title, description, OG, canonical, language, etc). Saves ~99% tokens. Try this first.
+    #[arg(long, global = true)]
+    meta: bool,
 
     /// HTTP method: GET (default), POST, HEAD
     #[arg(long, global = true, default_value = "GET")]
@@ -74,26 +78,22 @@ fn main() -> ! {
     let cfg = load_config();
     let timeout = cli.timeout;
     let max_size = cli.max_size;
-    let user_agent = cli
-        .user_agent
-        .or_else(|| cfg.get("user-agent").cloned());
-    let proxy = cli
-        .proxy
-        .or_else(|| cfg.get("proxy").cloned());
+    let user_agent = cli.user_agent.or_else(|| cfg.get("user-agent").cloned());
+    let proxy = cli.proxy.or_else(|| cfg.get("proxy").cloned());
 
-    // Parse HTTP method
     let method = match cli.method.to_uppercase().as_str() {
         "GET" => HttpMethod::Get,
         "POST" => HttpMethod::Post,
         "HEAD" => HttpMethod::Head,
         other => {
-            let err = ErrorCode::ConfigError(format!("Invalid HTTP method '{other}'. Use GET, POST, or HEAD."));
+            let err = ErrorCode::ConfigError(format!(
+                "Invalid HTTP method '{other}'. Use GET, POST, or HEAD."
+            ));
             print_error_json(&err, None);
             process::exit(err.exit_code());
         }
     };
 
-    // Validate POST requires post-data
     if method == HttpMethod::Post && cli.post_data.is_none() {
         let err = ErrorCode::ConfigError("--post-data is required when --method POST".into());
         print_error_json(&err, None);
@@ -102,7 +102,8 @@ fn main() -> ! {
 
     let json = cli.json;
     let compact = cli.compact;
-    let summary = cli.summary;
+    let meta = cli.meta;
+    let outline = cli.outline;
     let opts = FetchOptions {
         timeout_secs: timeout,
         max_body_bytes: max_size,
@@ -110,12 +111,12 @@ fn main() -> ! {
         user_agent,
         method,
         compact,
-        summary,
+        meta,
+        outline,
         post_body: cli.post_data,
         ..FetchOptions::default()
     };
 
-    // Handle config-check early — no fetch needed
     if matches!(cli.command, Command::ConfigCheck) {
         let result = cmd_config_check(&cfg);
         process::exit(result);
@@ -141,18 +142,22 @@ fn main() -> ! {
     }
 }
 
-/// Print a structured error as JSON. Always goes to stdout for agent parsing.
 pub fn print_error_json(err: &ErrorCode, url: Option<&str>) {
     if std::env::var("WR_JSON_ERROR").is_ok() || url.is_some() {
-        println!("{}", serde_json::to_string(&err.to_json(url)).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string(&err.to_json(url)).unwrap_or_default()
+        );
     }
 }
 
-fn fetch_with_opts(url: &str, opts: &FetchOptions) -> Result<(String, FetchResult), (i32, Option<ErrorCode>)> {
+fn fetch_with_opts(
+    url: &str,
+    opts: &FetchOptions,
+) -> Result<(String, FetchResult), (i32, Option<ErrorCode>)> {
     match fetch_url_with(url, opts) {
         Ok(result) => Ok((result.body.clone(), result)),
         Err(e) => {
-            // Try to classify the error
             let msg = format!("{e:#}");
             let err_code = if msg.contains("timed out") || msg.contains("timeout") {
                 Some(ErrorCode::Timeout)
@@ -171,9 +176,6 @@ fn fetch_with_opts(url: &str, opts: &FetchOptions) -> Result<(String, FetchResul
     }
 }
 
-
-
-/// Return exit code, printing truncation warning if body was truncated.
 fn handle_truncated(result: &FetchResult, opts: &FetchOptions) -> i32 {
     if result.truncated {
         eprintln!(
@@ -185,18 +187,45 @@ fn handle_truncated(result: &FetchResult, opts: &FetchOptions) -> i32 {
         0
     }
 }
-fn output_summary(s: SummaryResult, json: bool, result: &FetchResult, opts: &FetchOptions, url: &str) -> i32 {
+
+/// Generic output helper for structured modes (meta, outline).
+/// Each type implements both Display and to_json().
+fn output_mode<T: std::fmt::Display + ToJson>(
+    val: T,
+    json: bool,
+    result: &FetchResult,
+    opts: &FetchOptions,
+    url: &str,
+    mode: &str,
+) -> i32 {
     if json {
         let mut extra = serde_json::json!({});
         add_metadata(&mut extra, result, opts, url);
         let obj = extra.as_object_mut().unwrap();
-        obj.insert("summary_data".into(), s.to_json());
-        obj.insert("summary".into(), serde_json::Value::Bool(true));
+        obj.insert(format!("{mode}_data"), val.to_json());
+        obj.insert(mode.into(), serde_json::Value::Bool(true));
         println!("{extra}");
     } else {
-        println!("{s}");
+        println!("{val}");
     }
     handle_truncated(result, opts)
+}
+
+/// Trait for types that can be serialized to JSON.
+pub trait ToJson {
+    fn to_json(&self) -> serde_json::Value;
+}
+
+// Blanket impl: MetaResult and OutlineResult already implement to_json()
+impl ToJson for MetaResult {
+    fn to_json(&self) -> serde_json::Value {
+        self.to_json()
+    }
+}
+impl ToJson for OutlineResult {
+    fn to_json(&self) -> serde_json::Value {
+        self.to_json()
+    }
 }
 
 fn cmd_config_check(cfg: &std::collections::HashMap<String, String>) -> i32 {
@@ -206,7 +235,7 @@ fn cmd_config_check(cfg: &std::collections::HashMap<String, String>) -> i32 {
         Err(_) => {
             eprintln!("Config file not found at: {}", path.display());
             eprintln!("Create with: mkdir -p ~/.config/webread && echo 'timeout=15' > ~/.config/webread/config");
-            return 0; // Not an error — file is optional
+            return 0;
         }
     };
 
@@ -220,7 +249,11 @@ fn cmd_config_check(cfg: &std::collections::HashMap<String, String>) -> i32 {
         }
         0
     } else {
-        eprintln!("Config file at {} has {} issue(s):", path.display(), errors.len());
+        eprintln!(
+            "Config file at {} has {} issue(s):",
+            path.display(),
+            errors.len()
+        );
         for (key, msg) in &errors {
             eprintln!("  [{key}] {msg}");
         }
@@ -228,19 +261,38 @@ fn cmd_config_check(cfg: &std::collections::HashMap<String, String>) -> i32 {
     }
 }
 
-
-fn add_metadata(extra: &mut serde_json::Value, result: &FetchResult, opts: &FetchOptions, url: &str) {
+fn add_metadata(
+    extra: &mut serde_json::Value,
+    result: &FetchResult,
+    opts: &FetchOptions,
+    url: &str,
+) {
     let obj = extra.as_object_mut().unwrap();
     obj.insert("url".into(), serde_json::Value::String(url.to_string()));
-    obj.insert("final_url".into(), serde_json::Value::String(result.final_url.clone()));
-    obj.insert("status".into(), serde_json::Value::Number(serde_json::Number::from(result.status)));
-    obj.insert("max_size".into(), serde_json::Value::Number(serde_json::Number::from(opts.max_body_bytes as u64)));
-    obj.insert("truncated".into(), serde_json::Value::Bool(result.truncated));
+    obj.insert(
+        "final_url".into(),
+        serde_json::Value::String(result.final_url.clone()),
+    );
+    obj.insert(
+        "status".into(),
+        serde_json::Value::Number(serde_json::Number::from(result.status)),
+    );
+    obj.insert(
+        "max_size".into(),
+        serde_json::Value::Number(serde_json::Number::from(opts.max_body_bytes as u64)),
+    );
+    obj.insert(
+        "truncated".into(),
+        serde_json::Value::Bool(result.truncated),
+    );
     if let Some(ref ct) = result.content_type {
         obj.insert("content_type".into(), serde_json::Value::String(ct.clone()));
     }
     if let Some(ra) = result.retry_after {
-        obj.insert("retry_after".into(), serde_json::Value::Number(serde_json::Number::from(ra)));
+        obj.insert(
+            "retry_after".into(),
+            serde_json::Value::Number(serde_json::Number::from(ra)),
+        );
     }
     obj.insert("timed_out".into(), serde_json::Value::Bool(false));
     obj.insert("error".into(), serde_json::Value::Null);
@@ -249,8 +301,14 @@ fn add_metadata(extra: &mut serde_json::Value, result: &FetchResult, opts: &Fetc
 fn cmd_get(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Option<ErrorCode>)> {
     let (html, result) = fetch_with_opts(url, opts)?;
 
-    if opts.summary {
-        return Ok(output_summary(generate_summary(&html), json, &result, opts, url));
+    if opts.meta {
+        let m = extract_metadata(&html);
+        return Ok(output_mode(m, json, &result, opts, url, "meta"));
+    }
+
+    if opts.outline {
+        let o = generate_outline(&html);
+        return Ok(output_mode(o, json, &result, opts, url, "outline"));
     }
 
     let text = if opts.compact {
@@ -265,7 +323,10 @@ fn cmd_get(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Opti
         let obj = extra.as_object_mut().unwrap();
         let char_count = text.len();
         obj.insert("text".into(), serde_json::Value::String(text));
-        obj.insert("char_count".into(), serde_json::Value::Number(serde_json::Number::from(char_count as u64)));
+        obj.insert(
+            "char_count".into(),
+            serde_json::Value::Number(serde_json::Number::from(char_count as u64)),
+        );
         println!("{extra}");
     } else {
         println!("{text}");
@@ -309,11 +370,11 @@ fn cmd_html(
         println!("{extra}");
     } else {
         if let Some(sel_str) = selector {
-            let sel = scraper::Selector::parse(sel_str)
-                .map_err(|e| {
-                    let err = ErrorCode::InvalidSelector(format!("Invalid CSS selector '{sel_str}': {e}"));
-                    (err.exit_code(), Some(err))
-                })?;
+            let sel = scraper::Selector::parse(sel_str).map_err(|e| {
+                let err =
+                    ErrorCode::InvalidSelector(format!("Invalid CSS selector '{sel_str}': {e}"));
+                (err.exit_code(), Some(err))
+            })?;
             for element in doc.select(&sel) {
                 println!("{}", element.html());
             }
@@ -370,13 +431,22 @@ fn cmd_links(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Op
     Ok(handle_truncated(&result, opts))
 }
 
-fn cmd_readable(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Option<ErrorCode>)> {
+fn cmd_readable(
+    url: &str,
+    json: bool,
+    opts: &FetchOptions,
+) -> Result<i32, (i32, Option<ErrorCode>)> {
     let (html, result) = fetch_with_opts(url, opts)?;
 
-    if opts.summary {
-        return Ok(output_summary(generate_summary(&html), json, &result, opts, url));
+    if opts.meta {
+        let m = extract_metadata(&html);
+        return Ok(output_mode(m, json, &result, opts, url, "meta"));
     }
 
+    if opts.outline {
+        let o = generate_outline(&html);
+        return Ok(output_mode(o, json, &result, opts, url, "outline"));
+    }
 
     let text = extract_readable_content(&html).map_err(|e| {
         let err = ErrorCode::NetworkError(format!("Failed to extract readable content: {e}"));
@@ -389,7 +459,10 @@ fn cmd_readable(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32,
         let obj = extra.as_object_mut().unwrap();
         let char_count = text.len();
         obj.insert("text".into(), serde_json::Value::String(text));
-        obj.insert("char_count".into(), serde_json::Value::Number(serde_json::Number::from(char_count as u64)));
+        obj.insert(
+            "char_count".into(),
+            serde_json::Value::Number(serde_json::Number::from(char_count as u64)),
+        );
         println!("{extra}");
     } else {
         println!("{text}");
@@ -398,7 +471,11 @@ fn cmd_readable(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32,
     Ok(handle_truncated(&result, opts))
 }
 
-fn cmd_search(query: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Option<ErrorCode>)> {
+fn cmd_search(
+    query: &str,
+    json: bool,
+    opts: &FetchOptions,
+) -> Result<i32, (i32, Option<ErrorCode>)> {
     let url = "https://lite.duckduckgo.com/lite/";
     let agent = build_agent(opts).map_err(|e| {
         let err = ErrorCode::ProxyError(format!("{e}"));
@@ -426,7 +503,6 @@ fn cmd_search(query: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32,
     };
     let doc = scraper::Html::parse_document(&html);
 
-    // Extract search results with titles, URLs, and snippets
     let link_sel = scraper::Selector::parse("a.result-link").unwrap();
     let snippet_sel = scraper::Selector::parse(".result-snippet").unwrap();
     let snippets: Vec<String> = doc

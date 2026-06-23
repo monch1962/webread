@@ -161,38 +161,49 @@ fn test_devto_article() {
     );
 }
 
-// --- Summary mode tests ---
+// --- Meta mode tests ---
 
 #[test]
-fn test_summary_text_output() {
-    let out = webread(&["get", "https://example.com", "--summary"]).unwrap();
-    assert!(out.contains("Example Domain"), "summary should have title");
-    assert!(out.contains("Links:"), "summary should have link count");
-    assert!(out.contains("chars"), "summary should have char count");
+fn test_meta_text_output() {
+    let out = webread(&["get", "https://example.com", "--meta"]).unwrap();
+    assert!(out.contains("title:"), "--meta should have title field");
+    assert!(out.contains("links:"), "--meta should have link count");
+    assert!(out.contains("chars:"), "--meta should have char count");
 }
 
 #[test]
-fn test_summary_json_output() {
-    let out = webread(&["get", "https://example.com", "--summary", "--json"]).unwrap();
+fn test_meta_json_output() {
+    let out = webread(&["get", "https://example.com", "--meta", "--json"]).unwrap();
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-    assert!(v.get("summary").is_some(), "summary json must have 'summary' flag");
-    assert_eq!(v["summary"], true, "summary flag must be true");
-    assert!(v.get("summary_data").is_some(), "summary json must have 'summary_data'");
-    let sd = &v["summary_data"];
-    assert!(sd.get("title").is_some(), "summary_data must have 'title'");
-    assert!(sd.get("preview").is_some(), "summary_data must have 'preview'");
-    assert!(sd.get("sections").is_some(), "summary_data must have 'sections'");
-    assert!(sd.get("link_count").is_some(), "summary_data must have 'link_count'");
-    assert!(sd.get("total_chars").is_some(), "summary_data must have 'total_chars'");
-    assert!(sd["link_count"].as_u64().unwrap_or(0) > 0, "should have at least 1 link");
-    assert!(sd["total_chars"].as_u64().unwrap_or(0) > 0, "should have positive total_chars");
+    assert!(v.get("meta").is_some(), "meta json must have 'meta' flag");
+    assert_eq!(v["meta"], true, "meta flag must be true");
+    assert!(v.get("meta_data").is_some(), "meta json must have 'meta_data'");
+    let md = &v["meta_data"];
+    assert!(md.get("title").is_some(), "meta_data must have 'title'");
+    assert!(md.get("link_count").is_some(), "meta_data must have 'link_count'");
+    assert!(md.get("total_chars").is_some(), "meta_data must have 'total_chars'");
+}
+
+// --- Outline mode tests ---
+
+#[test]
+fn test_outline_text_output() {
+    let out = webread(&["get", "https://example.com", "--outline"]).unwrap();
+    assert!(out.contains("Example Domain"), "--outline should have page title");
+    assert!(out.contains("links:"), "--outline should have link count");
 }
 
 #[test]
-fn test_summary_readable_output() {
-    let out = webread(&["readable", "https://example.com", "--summary"]).unwrap();
-    assert!(out.contains("Example Domain"), "readable --summary should have title");
-    assert!(out.contains("Links:"), "readable --summary should have link count");
+fn test_outline_json_output() {
+    let out = webread(&["get", "https://example.com", "--outline", "--json"]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v.get("outline").is_some(), "outline json must have 'outline' flag");
+    assert_eq!(v["outline"], true, "outline flag must be true");
+    assert!(v.get("outline_data").is_some(), "outline json must have 'outline_data'");
+    let od = &v["outline_data"];
+    assert!(od.get("title").is_some(), "outline_data must have 'title'");
+    assert!(od.get("headings").is_some(), "outline_data must have 'headings'");
+    assert!(od.get("link_count").is_some(), "outline_data must have 'link_count'");
 }
 
 // --- New feature integration tests ---
