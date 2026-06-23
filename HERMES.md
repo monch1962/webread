@@ -185,6 +185,20 @@ For large pages, use --compact to compress whitespace aggressively:
 Reduces token count by ~10-30% on typical documentation pages.
 ```
 
+### Summary mode (agentic pre-scanning)
+```
+For a quick preview before deciding to fetch fully:
+  webread get <url> --summary
+Output: "Title — ~200 char preview...
+
+Sections: History, Features, API
+Links: 45 pages • 76920 chars"
+
+JSON: webread get <url> --summary --json
+Returns summary_data: {title, preview, sections[], link_count, total_chars}
+Saves ~95% tokens vs full extraction.
+```
+
 ### Extract specific elements
 ```
 To get all links: webread links <url>

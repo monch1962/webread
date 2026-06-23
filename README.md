@@ -56,6 +56,12 @@ webread get https://example.com --method HEAD
 # POST request with body data
 webread get https://httpbin.org/post --method POST --post-data "key=value"
 
+# Summary mode (title + preview + sections + links, ~95% token saving)
+webread get https://en.wikipedia.org/wiki/Rust --summary
+
+# Summary as JSON (structured data for agentic processing)
+webread get https://en.wikipedia.org/wiki/Rust --summary --json
+
 # Validate config file
 webread config-check
 
@@ -126,6 +132,7 @@ All commands support these safety flags for resource-constrained systems:
 | `--method <method>` | GET | HTTP method: `GET`, `POST`, `HEAD` |
 | `--post-data <body>` | — | Body data for POST requests |
 | `--compact` | off | Token-efficient output (aggressive whitespace compression) |
+| `--summary` | off | Page summary mode: title + ~200 char preview + sections + link/char count (~95% token saving) |
 | `--json` | off | Machine-parseable structured output |
 
 Plus built-in:

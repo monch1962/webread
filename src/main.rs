@@ -185,6 +185,20 @@ fn handle_truncated(result: &FetchResult, opts: &FetchOptions) -> i32 {
         0
     }
 }
+fn output_summary(s: SummaryResult, json: bool, result: &FetchResult, opts: &FetchOptions, url: &str) -> i32 {
+    if json {
+        let mut extra = serde_json::json!({});
+        add_metadata(&mut extra, result, opts, url);
+        let obj = extra.as_object_mut().unwrap();
+        obj.insert("summary_data".into(), s.to_json());
+        obj.insert("summary".into(), serde_json::Value::Bool(true));
+        println!("{extra}");
+    } else {
+        println!("{s}");
+    }
+    handle_truncated(result, opts)
+}
+
 fn cmd_config_check(cfg: &std::collections::HashMap<String, String>) -> i32 {
     let path = dirs_config_path().join("webread").join("config");
     let content = match std::fs::read_to_string(&path) {
@@ -236,18 +250,7 @@ fn cmd_get(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Opti
     let (html, result) = fetch_with_opts(url, opts)?;
 
     if opts.summary {
-        let s = generate_summary(&html);
-        if json {
-            let mut extra = serde_json::json!({});
-            add_metadata(&mut extra, &result, opts, url);
-            let obj = extra.as_object_mut().unwrap();
-            obj.insert("summary_data".into(), s.to_json());
-            obj.insert("summary".into(), serde_json::Value::Bool(true));
-            println!("{extra}");
-        } else {
-            println!("{s}");
-        }
-        return Ok(handle_truncated(&result, opts));
+        return Ok(output_summary(generate_summary(&html), json, &result, opts, url));
     }
 
     let text = if opts.compact {
@@ -371,19 +374,9 @@ fn cmd_readable(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32,
     let (html, result) = fetch_with_opts(url, opts)?;
 
     if opts.summary {
-        let s = generate_summary(&html);
-        if json {
-            let mut extra = serde_json::json!({});
-            add_metadata(&mut extra, &result, opts, url);
-            let obj = extra.as_object_mut().unwrap();
-            obj.insert("summary_data".into(), s.to_json());
-            obj.insert("summary".into(), serde_json::Value::Bool(true));
-            println!("{extra}");
-        } else {
-            println!("{s}");
-        }
-        return Ok(handle_truncated(&result, opts));
+        return Ok(output_summary(generate_summary(&html), json, &result, opts, url));
     }
+
 
     let text = extract_readable_content(&html).map_err(|e| {
         let err = ErrorCode::NetworkError(format!("Failed to extract readable content: {e}"));
