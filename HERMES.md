@@ -73,6 +73,7 @@ cat > ~/.config/webread/config << 'EOF'
 # Resource limits for constrained systems
 timeout=15
 max-size=5000000
+proxy=http://proxy.corp:8080
 EOF
 ```
 
@@ -152,6 +153,14 @@ Returns: {"query": "...", "results": [{"title":"...", "url":"...", "snippet":"..
 ```
 To fetch with resource limits: webread get <url> --timeout 15 --max-size 1000000
 Prevents hanging on slow sites and OOM on giant pages.
+```
+
+### Enterprise proxy environments
+```
+For environments requiring an HTTP proxy:
+  webread get <url> --proxy http://proxy.corp:8080
+webread also respects ALL_PROXY, HTTPS_PROXY, and HTTP_PROXY environment
+variables, as well as NO_PROXY for bypass rules.
 ```
 
 ### Extract specific elements

@@ -41,6 +41,9 @@ webread get https://en.wikipedia.org/wiki/Rust --timeout 15 --max-size 5000000
 
 # Custom User-Agent
 webread get https://api.example.com --user-agent "my-bot/1.0"
+
+# Via HTTP proxy (also respects ALL_PROXY, HTTPS_PROXY, HTTP_PROXY env vars)
+webread get https://example.com --proxy http://proxy.corp:8080
 ```
 
 ## Download
@@ -102,6 +105,7 @@ All commands support these safety flags for resource-constrained systems:
 | `--timeout <secs>` | 30s | Prevents hanging on slow/dead sites |
 | `--max-size <bytes>` | 10 MB | Truncates oversized responses (prevents OOM) |
 | `--user-agent <string>` | Safari UA | Override the User-Agent header |
+| `--proxy <url>` | env vars | HTTP proxy (e.g. `http://proxy:8080`). Falls back to `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY` env |
 | `--json` | off | Machine-parseable structured output |
 
 Plus built-in:
@@ -117,6 +121,7 @@ Create `~/.config/webread/config` with key=value lines:
 # Default timeout and size limits
 timeout=15
 max-size=5000000
+proxy=http://proxy.corp:8080
 user-agent=my-custom-bot/1.0
 ```
 
@@ -136,13 +141,13 @@ Comments (`#`) and blank lines are ignored. CLI flags override config file value
 ## Test Suite
 
 ```
-cargo test        # 66 tests (41 unit + 25 integration, parallel by default)
+cargo test        # 71 tests (46 unit + 25 integration, parallel by default)
 cargo clippy      # Zero warnings
 ```
 
 | Suite | Count | Covers |
 |-------|-------|--------|
-| Unit (lib) | 41 | URL decoding, text extraction, readability scoring, fetch errors, config parsing, URL resolution, content-type checks, retry logic, user-agent override |
+| Unit (lib) | 46 | URL decoding, text extraction, readability scoring, fetch errors, config parsing, URL resolution, content-type checks, retry logic, user-agent override, proxy config, agent building |
 | Integration | 25 | CLI smoke tests, JSON output structure, cross-site (Wikipedia, GitHub, arXiv, HN, dev.to), parallel stress, URL list validation |
 
 Cross-site integration tests validate against real websites with
