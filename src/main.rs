@@ -32,6 +32,10 @@ struct Cli {
     #[arg(long, global = true)]
     compact: bool,
 
+    /// Summary mode: return only title + first ~200 chars (saves ~95% tokens)
+    #[arg(long, global = true)]
+    summary: bool,
+
     /// HTTP method: GET (default), POST, HEAD
     #[arg(long, global = true, default_value = "GET")]
     method: String,
@@ -98,6 +102,7 @@ fn main() -> ! {
 
     let json = cli.json;
     let compact = cli.compact;
+    let summary = cli.summary;
     let opts = FetchOptions {
         timeout_secs: timeout,
         max_body_bytes: max_size,
@@ -105,6 +110,7 @@ fn main() -> ! {
         user_agent,
         method,
         compact,
+        summary,
         post_body: cli.post_data,
         ..FetchOptions::default()
     };
@@ -228,6 +234,24 @@ fn add_metadata(extra: &mut serde_json::Value, result: &FetchResult, opts: &Fetc
 
 fn cmd_get(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Option<ErrorCode>)> {
     let (html, result) = fetch_with_opts(url, opts)?;
+
+    if opts.summary {
+        let summary = generate_summary(&html);
+        if json {
+            let mut extra = serde_json::json!({});
+            add_metadata(&mut extra, &result, opts, url);
+            let obj = extra.as_object_mut().unwrap();
+            let char_count = summary.len();
+            obj.insert("text".into(), serde_json::Value::String(summary));
+            obj.insert("char_count".into(), serde_json::Value::Number(serde_json::Number::from(char_count as u64)));
+            obj.insert("summary".into(), serde_json::Value::Bool(true));
+            println!("{extra}");
+        } else {
+            println!("{summary}");
+        }
+        return Ok(handle_truncated(&result, opts));
+    }
+
     let text = if opts.compact {
         html_to_text_with_options(&html, true)
     } else {
@@ -347,6 +371,24 @@ fn cmd_links(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Op
 
 fn cmd_readable(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Option<ErrorCode>)> {
     let (html, result) = fetch_with_opts(url, opts)?;
+
+    if opts.summary {
+        let summary = generate_summary(&html);
+        if json {
+            let mut extra = serde_json::json!({});
+            add_metadata(&mut extra, &result, opts, url);
+            let obj = extra.as_object_mut().unwrap();
+            let char_count = summary.len();
+            obj.insert("text".into(), serde_json::Value::String(summary));
+            obj.insert("char_count".into(), serde_json::Value::Number(serde_json::Number::from(char_count as u64)));
+            obj.insert("summary".into(), serde_json::Value::Bool(true));
+            println!("{extra}");
+        } else {
+            println!("{summary}");
+        }
+        return Ok(handle_truncated(&result, opts));
+    }
+
     let text = extract_readable_content(&html).map_err(|e| {
         let err = ErrorCode::NetworkError(format!("Failed to extract readable content: {e}"));
         (err.exit_code(), Some(err))

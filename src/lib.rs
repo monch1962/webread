@@ -212,6 +212,7 @@ pub struct FetchOptions {
     pub user_agent: Option<String>,
     pub method: HttpMethod,
     pub compact: bool,
+    pub summary: bool,
     pub post_body: Option<String>,
 }
 
@@ -226,6 +227,7 @@ impl Default for FetchOptions {
             user_agent: None,
             method: HttpMethod::Get,
             compact: false,
+            summary: false,
             post_body: None,
         }
     }
@@ -775,6 +777,54 @@ pub fn html_to_text_with_options(html: &str, compact: bool) -> String {
     if compact { compact_text(&text) } else { normalize_space(&text) }
 }
 
+/// Generate a compact summary of page content (~200 chars).
+/// Extracts the title (from <h1> or <title>) and the first meaningful
+/// sentence or two of body text. Suitable for agentic pre-scanning
+/// where full extraction would waste tokens.
+pub fn generate_summary(html: &str) -> String {
+    let doc = Html::parse_document(html);
+
+    // Extract title: check <h1> first, then <title>
+    let title = Selector::parse("h1")
+        .ok()
+        .and_then(|s| doc.select(&s).next())
+        .map(|e| e.text().collect::<Vec<_>>().join(" ").trim().to_string())
+        .filter(|t| !t.is_empty())
+        .or_else(|| {
+            Selector::parse("title")
+                .ok()
+                .and_then(|s| doc.select(&s).next())
+                .map(|e| e.text().collect::<Vec<_>>().join(" ").trim().to_string())
+                .filter(|t| !t.is_empty())
+        });
+
+    // Extract first ~200 chars of body text as preview
+    let body = Selector::parse("body")
+        .ok()
+        .and_then(|s| doc.select(&s).next())
+        .map(|e| collect_text(e, &[]))
+        .unwrap_or_default();
+
+    let preview = normalize_space(&body);
+    let preview = if preview.len() > 200 {
+        let mut truncated = preview[..200].to_string();
+        if let Some(last_space) = truncated.rfind(' ') {
+            truncated.truncate(last_space);
+        }
+        truncated.push_str("...");
+        truncated
+    } else {
+        preview
+    };
+
+    match title {
+        Some(t) if !t.is_empty() => {
+            format!("{t} — {preview}")
+        }
+        _ => preview,
+    }
+}
+
 /// Extract readable content using scoring-based Mozilla Readability algorithm.
 pub fn extract_readable_content(html: &str) -> anyhow::Result<String> {
     fn text_len(e: ElementRef) -> usize { e.text().collect::<String>().trim().len() }
@@ -918,6 +968,45 @@ mod tests {
         let text = extract_readable_content(&html).unwrap();
         assert!(text.contains("Real Article")); assert!(!text.contains("Navigation"));
         assert!(!text.contains("Footer"));
+    }
+
+    #[test] fn test_generate_summary_with_title() {
+        let html = "<html><head><title>Test Page</title></head><body><h1>Main Title</h1><p>This is the first paragraph of content that should appear in the summary preview for the agent to read and understand.</p></body></html>";
+        let summary = generate_summary(&html);
+        assert!(summary.contains("Main Title"), "summary should contain h1 title");
+        assert!(summary.contains("first paragraph"), "summary should contain body text");
+        assert!(summary.len() < 300, "summary should be compact");
+    }
+
+    #[test] fn test_generate_summary_fallback_to_title_tag() {
+        let html = "<html><head><title>Page Title Only</title></head><body><p>Some body text here for the summary preview.</p></body></html>";
+        let summary = generate_summary(&html);
+        assert!(summary.contains("Page Title Only"), "summary should fall back to <title>");
+        assert!(summary.contains("body text"), "summary should contain body");
+    }
+
+    #[test] fn test_generate_summary_truncates_long_content() {
+        let body_text = "A short intro. ".to_owned() + &"word ".repeat(500);
+        let html = format!("<html><body><h1>Long Page</h1><p>{}</p></body></html>", body_text);
+        let summary = generate_summary(&html);
+        assert!(summary.contains("Long Page"), "summary should have title");
+        assert!(summary.ends_with("..."), "long content should be truncated");
+        assert!(summary.len() < 500, "truncated summary should be compact");
+    }
+
+    #[test] fn test_generate_summary_no_title() {
+        let html = "<html><body><p>Just some text without any title element at all here.</p></body></html>";
+        let summary = generate_summary(&html);
+        assert!(summary.contains("text without"), "summary should work without title");
+    }
+
+    #[test] fn test_generate_summary_empty() {
+        let summary = generate_summary("<html></html>");
+        assert!(summary.is_empty() || summary.trim().is_empty());
+    }
+
+    #[test] fn test_fetch_options_summary_default() {
+        assert!(!FetchOptions::default().summary, "summary should default to false");
     }
 
     #[test] fn test_readable_empty_article() {
