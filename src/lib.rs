@@ -212,7 +212,8 @@ pub struct FetchOptions {
     pub user_agent: Option<String>,
     pub method: HttpMethod,
     pub compact: bool,
-    pub summary: bool,
+    pub meta: bool,
+    pub outline: bool,
     pub post_body: Option<String>,
 }
 
@@ -227,7 +228,8 @@ impl Default for FetchOptions {
             user_agent: None,
             method: HttpMethod::Get,
             compact: false,
-            summary: false,
+            meta: false,
+            outline: false,
             post_body: None,
         }
     }
@@ -242,46 +244,6 @@ pub struct FetchResult {
     pub final_url: String,
     pub truncated: bool,
     pub retry_after: Option<u64>,
-}
-
-/// Result of generating a page summary with metadata for agentic use.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SummaryResult {
-    /// Page title (from h1 or title tag).
-    pub title: String,
-    /// First ~200 chars of readable content.
-    pub preview: String,
-    /// Section headings (h2, h3) found in the page, comma-separated, max 8.
-    pub sections: Vec<String>,
-    /// Total number of links on the page.
-    pub link_count: usize,
-    /// Total characters of readable content.
-    pub total_chars: usize,
-}
-
-impl SummaryResult {
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "title": self.title,
-            "preview": self.preview,
-            "sections": self.sections,
-            "link_count": self.link_count,
-            "total_chars": self.total_chars,
-        })
-    }
-}
-
-impl std::fmt::Display for SummaryResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} — {}", self.title, self.preview)?;
-        if !self.sections.is_empty() {
-            write!(f, "
-
-Sections: {}", self.sections.join(", "))?;
-        }
-        write!(f, "
-Links: {} pages • {} chars", self.link_count, self.total_chars)
-    }
 }
 
 /// Fetch a URL with default options (convenience wrapper).
@@ -685,6 +647,12 @@ mod guardrail_tests {
     #[test] fn test_fetch_options_post_body_default() {
         assert!(FetchOptions::default().post_body.is_none());
     }
+    #[test] fn test_fetch_options_meta_default() {
+        assert!(!FetchOptions::default().meta, "meta should default to false");
+    }
+    #[test] fn test_fetch_options_outline_default() {
+        assert!(!FetchOptions::default().outline, "outline should default to false");
+    }
 
     // --- compact_text edge cases ---
 
@@ -817,15 +785,10 @@ pub fn html_to_text_with_options(html: &str, compact: bool) -> String {
     if compact { compact_text(&text) } else { normalize_space(&text) }
 }
 
-/// Generate a compact summary of page content (~200 chars).
-/// Extracts the title (from <h1> or <title>) and the first meaningful
-/// sentence or two of body text. Suitable for agentic pre-scanning
-/// where full extraction would waste tokens.
-pub fn generate_summary(html: &str) -> SummaryResult {
+/// Extract page title from HTML: prefers <h1>, falls back to <title>.
+pub fn page_title(html: &str) -> String {
     let doc = Html::parse_document(html);
-
-    // Extract title: check <h1> first, then <title>
-    let title = Selector::parse("h1")
+    Selector::parse("h1")
         .ok()
         .and_then(|s| doc.select(&s).next())
         .map(|e| e.text().collect::<Vec<_>>().join(" ").trim().to_string())
@@ -837,54 +800,169 @@ pub fn generate_summary(html: &str) -> SummaryResult {
                 .map(|e| e.text().collect::<Vec<_>>().join(" ").trim().to_string())
                 .filter(|t| !t.is_empty())
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
 
-    // Extract readable content for the preview
-    let readable = extract_readable_content(html).unwrap_or_default();
-    let total_chars = readable.len();
-    let cleaned = normalize_space(&readable);
+#[derive(Clone, Debug, PartialEq)]
+pub struct MetaResult {
+    pub title: String,
+    pub description: String,
+    pub canonical: String,
+    pub og_title: String,
+    pub og_description: String,
+    pub og_image: String,
+    pub og_type: String,
+    pub twitter_card: String,
+    pub charset: String,
+    pub language: String,
+    pub json_ld: String,
+    pub link_count: usize,
+    pub total_chars: usize,
+}
 
-    // Truncate preview to ~200 chars
-    let preview = if cleaned.len() > 200 {
-        let mut truncated = cleaned[..200].to_string();
-        if let Some(last_space) = truncated.rfind(' ') {
-            truncated.truncate(last_space);
+impl MetaResult {
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut obj = serde_json::json!({
+            "title": self.title,
+            "description": self.description,
+            "canonical": self.canonical,
+            "og_title": self.og_title,
+            "og_description": self.og_description,
+            "og_image": self.og_image,
+            "og_type": self.og_type,
+            "twitter_card": self.twitter_card,
+            "charset": self.charset,
+            "language": self.language,
+            "link_count": self.link_count,
+            "total_chars": self.total_chars,
+        });
+        if !self.json_ld.is_empty() {
+            obj["json_ld"] = serde_json::Value::String(self.json_ld.clone());
         }
-        truncated.push_str("...");
-        truncated
-    } else {
-        cleaned
-    };
+        obj
+    }
+}
 
-    // Extract up to 8 section headings (h2, h3)
-    let mut sections: Vec<String> = Vec::new();
-    for tag in &["h2", "h3"] {
-        if let Ok(sel) = Selector::parse(tag) {
+impl std::fmt::Display for MetaResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "title: {}", self.title)?;
+        if !self.description.is_empty() { writeln!(f, "description: {}", self.description)?; }
+        if !self.canonical.is_empty() { writeln!(f, "canonical: {}", self.canonical)?; }
+        if !self.og_title.is_empty() { writeln!(f, "og:title: {}", self.og_title)?; }
+        if !self.og_description.is_empty() { writeln!(f, "og:description: {}", self.og_description)?; }
+        if !self.og_image.is_empty() { writeln!(f, "og:image: {}", self.og_image)?; }
+        if !self.og_type.is_empty() { writeln!(f, "og:type: {}", self.og_type)?; }
+        if !self.twitter_card.is_empty() { writeln!(f, "twitter:card: {}", self.twitter_card)?; }
+        if !self.charset.is_empty() { writeln!(f, "charset: {}", self.charset)?; }
+        if !self.language.is_empty() { writeln!(f, "language: {}", self.language)?; }
+        if !self.json_ld.is_empty() { writeln!(f, "json_ld: {}", self.json_ld)?; }
+        writeln!(f, "links: {}  chars: {}", self.link_count, self.total_chars)
+    }
+}
+
+pub fn extract_metadata(html: &str) -> MetaResult {
+    let doc = Html::parse_document(html);
+    fn attr(doc: &Html, selector: &str, attr_name: &str) -> String {
+        Selector::parse(selector).ok()
+            .and_then(|s| doc.select(&s).next())
+            .and_then(|e| e.value().attr(attr_name))
+            .unwrap_or("").trim().to_string()
+    }
+    fn meta_content(doc: &Html, name: &str) -> String {
+        let sel = format!(r#"meta[name="{}"], meta[property="{}"]"#, name, name);
+        attr(doc, &sel, "content")
+    }
+    let title = page_title(html);
+    let description = meta_content(&doc, "description");
+    let canonical = attr(&doc, r#"link[rel="canonical"]"#, "href");
+    let og_title = meta_content(&doc, "og:title");
+    let og_description = meta_content(&doc, "og:description");
+    let og_image = meta_content(&doc, "og:image");
+    let og_type = meta_content(&doc, "og:type");
+    let twitter_card = meta_content(&doc, "twitter:card");
+    let charset = attr(&doc, "meta[charset]", "charset");
+    let language = attr(&doc, "html", "lang");
+    let json_ld = Selector::parse(r#"script[type="application/ld+json"]"#).ok()
+        .and_then(|s| doc.select(&s).next())
+        .map(|e| {
+            let t: String = e.text().collect();
+            let trimmed = t.trim();
+            if trimmed.len() > 500 {
+                format!("{}...", &trimmed[..500])
+            } else {
+                trimmed.to_string()
+            }
+        })
+        .unwrap_or_default();
+    let link_count = Selector::parse("a").ok()
+        .map(|sel| doc.select(&sel).count()).unwrap_or(0);
+    let total_chars = extract_readable_content(html).unwrap_or_default().len();
+    MetaResult {
+        title, description, canonical, og_title, og_description, og_image,
+        og_type, twitter_card, charset, language, json_ld, link_count, total_chars,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Heading {
+    pub level: u8,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutlineResult {
+    pub title: String,
+    pub headings: Vec<Heading>,
+    pub link_count: usize,
+    pub total_chars: usize,
+}
+
+impl OutlineResult {
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "title": self.title,
+            "headings": self.headings.iter().map(|h| {
+                serde_json::json!({"level": h.level, "text": h.text})
+            }).collect::<Vec<_>>(),
+            "link_count": self.link_count,
+            "total_chars": self.total_chars,
+        })
+    }
+}
+
+impl std::fmt::Display for OutlineResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{}", self.title)?;
+        for h in &self.headings {
+            let indent = "  ".repeat((h.level - 1) as usize);
+            writeln!(f, "{indent}h{}: {}", h.level, h.text)?;
+        }
+        writeln!(f, "links: {}  chars: {}", self.link_count, self.total_chars)
+    }
+}
+
+pub fn generate_outline(html: &str) -> OutlineResult {
+    let doc = Html::parse_document(html);
+    let title = page_title(html);
+    let mut headings: Vec<Heading> = Vec::new();
+    for level in 1..=6 {
+        let tag = format!("h{level}");
+        // Bind to variable to avoid temporary lifetime issue with Selector::parse
+        let parse_result = Selector::parse(&tag);
+        if let Ok(sel) = parse_result {
             for el in doc.select(&sel) {
-                let heading: String = el.text().collect::<Vec<_>>().join(" ").trim().to_string();
-                if !heading.is_empty() && sections.len() < 8 {
-                    sections.push(heading);
+                let text: String = el.text().collect::<Vec<_>>().join(" ").trim().to_string();
+                if !text.is_empty() {
+                    headings.push(Heading { level, text });
                 }
             }
         }
     }
-
-    // Count links
-    let link_count = Selector::parse("a")
-        .ok()
-        .map(|sel| doc.select(&sel).count())
-        .unwrap_or(0);
-
-    SummaryResult {
-        title,
-        preview,
-        sections,
-        link_count,
-        total_chars,
-    }
+    let link_count = Selector::parse("a").ok()
+        .map(|sel| doc.select(&sel).count()).unwrap_or(0);
+    let total_chars = extract_readable_content(html).unwrap_or_default().len();
+    OutlineResult { title, headings, link_count, total_chars }
 }
-
-/// Extract readable content using scoring-based Mozilla Readability algorithm.
 pub fn extract_readable_content(html: &str) -> anyhow::Result<String> {
     fn text_len(e: ElementRef) -> usize { e.text().collect::<String>().trim().len() }
     fn has_content_class(e: ElementRef) -> bool {
@@ -1029,50 +1107,17 @@ mod tests {
         assert!(!text.contains("Footer"));
     }
 
-    #[test] fn test_generate_summary_with_title() {
-        let html = "<html><head><title>Test Page</title></head><body><h1>Main Title</h1><p>This is the first paragraph of content that should appear in the summary preview for the agent to read and understand.</p></body></html>";
-        let s = generate_summary(&html);
-        assert_eq!(s.title, "Main Title", "should extract h1 title");
-        assert!(s.preview.contains("first paragraph"), "summary should contain body text");
-        assert!(s.preview.len() < 300, "preview should be compact");
-        assert!(s.total_chars > 0, "should report total chars");
-    }
+    
 
-    #[test] fn test_generate_summary_fallback_to_title_tag() {
-        let html = "<html><head><title>Page Title Only</title></head><body><p>Some body text here for the summary preview.</p></body></html>";
-        let s = generate_summary(&html);
-        assert_eq!(s.title, "Page Title Only", "should fall back to <title>");
-        assert!(s.preview.contains("body text"), "summary should contain body");
-    }
+    
 
-    #[test] fn test_generate_summary_truncates_long_content() {
-        let body_text = "A short intro. ".to_owned() + &"word ".repeat(500);
-        let html = format!("<html><body><h1>Long Page</h1><p>{}</p></body></html>", body_text);
-        let s = generate_summary(&html);
-        assert_eq!(s.title, "Long Page", "summary should have title");
-        assert!(s.preview.ends_with("..."), "long content should be truncated");
-        assert!(s.preview.len() < 500, "truncated preview should be compact");
-        assert!(s.total_chars > 2000, "should report actual total chars");
-    }
+    
 
-    #[test] fn test_generate_summary_no_title() {
-        let html = "<html><body><p>Just some text without any title element at all here.</p></body></html>";
-        let s = generate_summary(&html);
-        assert!(s.preview.contains("text without"), "summary should work without title");
-        assert!(s.link_count == 0, "should report 0 links");
-    }
+    
 
-    #[test] fn test_generate_summary_empty() {
-        let s = generate_summary("<html></html>");
-        assert!(s.preview.is_empty(), "empty html should have empty preview");
-        assert!(s.title.is_empty(), "empty html should have empty title");
-        assert_eq!(s.sections.len(), 0, "empty html should have no sections");
-        assert_eq!(s.link_count, 0, "empty html should have no links");
-    }
+    
 
-    #[test] fn test_fetch_options_summary_default() {
-        assert!(!FetchOptions::default().summary, "summary should default to false");
-    }
+    
 
     #[test] fn test_readable_empty_article() {
         assert!(extract_readable_content("<html><body><article></article></body></html>").unwrap().trim().is_empty());

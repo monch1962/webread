@@ -185,18 +185,43 @@ For large pages, use --compact to compress whitespace aggressively:
 Reduces token count by ~10-30% on typical documentation pages.
 ```
 
-### Summary mode (agentic pre-scanning)
+### Meta mode (agentic pre-scanning)
 ```
-For a quick preview before deciding to fetch fully:
-  webread get <url> --summary
-Output: "Title — ~200 char preview...
+For structured page metadata (no body text):
+  webread get <url> --meta
+Output:
+  title: <page title>
+  description: <meta description>
+  canonical: <canonical URL>
+  og:title: <OG title>
+  og:description: <OG description>
+  og:image: <OG image>
+  og:type: <OG type>
+  twitter:card: <Twitter card type>
+  charset: <character encoding>
+  language: <page language>
+  json_ld: <JSON-LD structured data>
+  links: N  chars: N
 
-Sections: History, Features, API
-Links: 45 pages • 76920 chars"
+JSON: webread get <url> --meta --json
+Returns meta_data: {title, description, canonical, og_title, ...}
+Saves ~99% tokens vs full extraction.
+```
 
-JSON: webread get <url> --summary --json
-Returns summary_data: {title, preview, sections[], link_count, total_chars}
-Saves ~95% tokens vs full extraction.
+### Outline mode (agentic pre-scanning)
+```
+For page heading hierarchy (no body text):
+  webread get <url> --outline
+Output:
+  <page title>
+  h1: <heading text>
+    h2: <subheading>
+      h3: <sub-subheading>
+  ...
+
+JSON: webread get <url> --outline --json
+Returns outline_data: {title, headings[{level, text}], ...}
+Saves ~98% tokens vs full extraction.
 ```
 
 ### Extract specific elements
@@ -227,7 +252,7 @@ in milliseconds and uses minimal RAM.
 # Smoke test
 webread get https://example.com
 
-# Full test suite (104 tests)
+# Full test suite (106+ tests)
 cd ~/Projects/webread && cargo test
 
 # Batch test across 302 websites (parallel, ~2 minutes)

@@ -14,7 +14,7 @@ webread html <url> [--selector 'css']    # Raw HTML with optional CSS filter
 webread config-check                     # Validate config file
 
 All commands support --json, --timeout, --max-size, --proxy, --user-agent,
---compact, --method, and --post-data flags.
+--compact, --meta, --outline, --method, and --post-data flags.
 ```
 
 ## Examples
@@ -56,11 +56,17 @@ webread get https://example.com --method HEAD
 # POST request with body data
 webread get https://httpbin.org/post --method POST --post-data "key=value"
 
-# Summary mode (title + preview + sections + links, ~95% token saving)
-webread get https://en.wikipedia.org/wiki/Rust --summary
+# Meta mode (structured page metadata, ~99% token saving)
+webread get https://en.wikipedia.org/wiki/Rust --meta
 
-# Summary as JSON (structured data for agentic processing)
-webread get https://en.wikipedia.org/wiki/Rust --summary --json
+# Meta as JSON (structured data for agentic processing)
+webread get https://en.wikipedia.org/wiki/Rust --meta --json
+
+# Outline mode (heading hierarchy only, ~98% token saving)
+webread get https://en.wikipedia.org/wiki/Rust --outline
+
+# Outline as JSON
+webread get https://en.wikipedia.org/wiki/Rust --outline --json
 
 # Validate config file
 webread config-check
@@ -132,7 +138,8 @@ All commands support these safety flags for resource-constrained systems:
 | `--method <method>` | GET | HTTP method: `GET`, `POST`, `HEAD` |
 | `--post-data <body>` | — | Body data for POST requests |
 | `--compact` | off | Token-efficient output (aggressive whitespace compression) |
-| `--summary` | off | Page summary mode: title + ~200 char preview + sections + link/char count (~95% token saving) |
+| `--meta` | off | Structured metadata mode: title + description + OG tags + canonical + charset + language + link/char count (~99% token saving) |
+| `--outline` | off | Heading hierarchy mode: title + h1-h6 tree + link/char count (~98% token saving) |
 | `--json` | off | Machine-parseable structured output |
 
 Plus built-in:
@@ -198,8 +205,8 @@ cargo clippy      # Zero warnings
 
 | Suite | Count | Covers |
 |-------|-------|--------|
-| Unit (lib) | 73 | URL decoding, text extraction, readability scoring, fetch errors, config parsing, URL resolution, content-type checks, retry logic, user-agent override, proxy config, agent building, compact mode, error codes (13 variants), config validation, HTTP method, link text, search snippets |
-| Integration | 31 | CLI smoke tests, JSON output structure, JSON metadata fields, compact mode, HEAD method, links with text, search snippets, cross-site (Wikipedia, GitHub, arXiv, HN, dev.to), parallel stress, URL list validation |
+| Unit (lib) | 75 | URL decoding, text extraction, readability scoring, fetch errors, config parsing, URL resolution, content-type checks, retry logic, user-agent override, proxy config, agent building, compact mode, meta mode, outline mode, error codes (13 variants), config validation, HTTP method, link text, search snippets |
+| Integration | 31 | CLI smoke tests, JSON output structure, JSON metadata fields, compact mode, meta mode, outline mode, HEAD method, links with text, search snippets, cross-site (Wikipedia, GitHub, arXiv, HN, dev.to), parallel stress, URL list validation |
 
 Cross-site integration tests validate against real websites with
 `std::thread::spawn` for concurrent execution to verify no shared-state
