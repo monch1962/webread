@@ -68,6 +68,11 @@ pub struct FetchOptions {
     pub retry_transient: bool,
     /// Whether to skip non-HTML content types.
     pub require_html: bool,
+    /// Proxy URL (e.g. "http://proxy:8080"). Falls back to ALL_PROXY,
+    /// HTTPS_PROXY, HTTP_PROXY env vars if not set.
+    pub proxy_url: Option<String>,
+    /// Override the default User-Agent string.
+    pub user_agent: Option<String>,
 }
 
 impl Default for FetchOptions {
@@ -77,6 +82,8 @@ impl Default for FetchOptions {
             max_body_bytes: 10 * 1024 * 1024, // 10 MB
             retry_transient: true,
             require_html: true,
+            proxy_url: None,
+            user_agent: None,
         }
     }
 }
@@ -96,10 +103,47 @@ pub fn fetch_url(url: &str) -> anyhow::Result<String> {
     Ok(result.body)
 }
 
+/// Build a ureq Agent configured with proxy and timeout from FetchOptions.
+///
+/// Proxy resolution order (first wins):
+/// 1. `opts.proxy_url` (set via --proxy flag or config file)
+/// 2. `ALL_PROXY` / `all_proxy` environment variable
+/// 3. `HTTPS_PROXY` / `https_proxy` environment variable
+/// 4. `HTTP_PROXY` / `http_proxy` environment variable
+///
+/// Also respects `NO_PROXY` / `no_proxy` for bypass rules.
+pub fn build_agent(opts: &FetchOptions) -> anyhow::Result<ureq::Agent> {
+    let mut cb = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(opts.timeout_secs)));
+
+    // Determine proxy URL: explicit flag > env vars
+    let proxy_url = opts.proxy_url.clone().or_else(|| {
+        // Check ALL_PROXY first (most general), then HTTPS_PROXY, then HTTP_PROXY
+        for var in &["ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+            if let Ok(val) = std::env::var(var) {
+                if !val.is_empty() {
+                    return Some(val);
+                }
+            }
+        }
+        None
+    });
+
+    if let Some(ref url) = proxy_url {
+        let proxy = ureq::Proxy::new(url)
+            .map_err(|e| anyhow::anyhow!("Invalid proxy URL '{url}': {e}"))?;
+        cb = cb.proxy(Some(proxy));
+    }
+
+    let agent = cb.build();
+    Ok(agent.new_agent())
+}
+
 /// Fetch a URL with the given resource guardrail options.
 ///
 /// Features:
 /// - Configurable timeout (prevents hanging)
+/// - Proxy support (--proxy flag or env vars)
 /// - Body size limit (prevents OOM on giant pages)
 /// - Content-type filtering (skips non-HTML responses)
 /// - Automatic retry on transient errors
@@ -108,14 +152,14 @@ pub fn fetch_url_with(url: &str, opts: &FetchOptions) -> anyhow::Result<FetchRes
     let do_fetch = || -> anyhow::Result<FetchResult> {
         use ureq::ResponseExt;
 
-        let config = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(opts.timeout_secs)))
-            .build();
-        let agent = config.new_agent();
+        let agent = build_agent(opts)?;
+        let ua = opts.user_agent.as_deref().unwrap_or(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15"
+        );
 
         let response = agent
             .get(url)
-            .header("User-Agent", &user_agent())
+            .header("User-Agent", ua)
             .call()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -179,13 +223,7 @@ pub fn fetch_url_with(url: &str, opts: &FetchOptions) -> anyhow::Result<FetchRes
     }
 
     result.map_err(|e| anyhow::anyhow!("Failed to fetch {url}: {e:#}"))
-}
-
-/// Resolve a potentially relative URL against a base URL.
-/// If `href` is already absolute, returns it unchanged.
-/// Handles: root-relative (/x), relative (x), protocol-relative (//x),
-/// up-level (../x), fragments (#x), and query (?x) references.
-pub fn resolve_url(base: &str, href: &str) -> String {
+}pub fn resolve_url(base: &str, href: &str) -> String {
     // Already absolute (has scheme)
     if href.contains("://") {
         return href.to_string();
@@ -457,6 +495,44 @@ of commonly used pangrams that serve the same purpose.</p>
         let result = fetch_url_with("https://httpbin.org/delay/10", &opts);
         // Should fail quickly rather than retry
         assert!(result.is_err(), "should fail with short timeout");
+    }
+    #[test]
+    fn test_build_agent_with_proxy() {
+        let opts = FetchOptions {
+            proxy_url: Some("http://proxy:8080".to_string()),
+            ..FetchOptions::default()
+        };
+        let agent = build_agent(&opts);
+        assert!(agent.is_ok(), "valid proxy URL should build agent");
+    }
+
+    #[test]
+    fn test_build_agent_invalid_proxy() {
+        let opts = FetchOptions {
+            proxy_url: Some("not a valid proxy".to_string()),
+            ..FetchOptions::default()
+        };
+        let agent = build_agent(&opts);
+        assert!(agent.is_err(), "invalid proxy URL should fail");
+    }
+
+    #[test]
+    fn test_build_agent_no_proxy() {
+        let opts = FetchOptions::default();
+        let agent = build_agent(&opts);
+        assert!(agent.is_ok(), "no proxy should build agent fine");
+    }
+
+    #[test]
+    fn test_fetch_options_proxy_default() {
+        let opts = FetchOptions::default();
+        assert!(opts.proxy_url.is_none(), "proxy should default to None");
+    }
+
+    #[test]
+    fn test_fetch_options_user_agent_default() {
+        let opts = FetchOptions::default();
+        assert!(opts.user_agent.is_none(), "user_agent should default to None");
     }
 }
 

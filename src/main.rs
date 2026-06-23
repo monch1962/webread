@@ -23,6 +23,10 @@ struct Cli {
     #[arg(long, global = true)]
     user_agent: Option<String>,
 
+    /// Proxy URL (e.g. "http://proxy:8080"). Falls back to ALL_PROXY/HTTPS_PROXY/HTTP_PROXY env.
+    #[arg(long, global = true)]
+    proxy: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -54,25 +58,26 @@ fn main() -> anyhow::Result<()> {
     let max_size = cli.max_size;
     let user_agent = cli
         .user_agent
-        .or_else(|| cfg.get("user-agent").cloned())
-        .unwrap_or_else(user_agent);
+        .or_else(|| cfg.get("user-agent").cloned());
+    let proxy = cli
+        .proxy
+        .or_else(|| cfg.get("proxy").cloned());
 
     let json = cli.json;
     let opts = FetchOptions {
         timeout_secs: timeout,
         max_body_bytes: max_size,
+        proxy_url: proxy,
+        user_agent,
         ..FetchOptions::default()
     };
-
-    // Save "original" user_agent for contexts that need it
-    let _ = user_agent; // used by fetch_url_with internally
 
     match cli.command {
         Command::Get { url } => cmd_get(&url, json, &opts),
         Command::Html { url, selector } => cmd_html(&url, selector.as_deref(), json, &opts),
         Command::Links { url } => cmd_links(&url, json, &opts),
         Command::Readable { url } => cmd_readable(&url, json, &opts),
-        Command::Search { query } => cmd_search(&query, json),
+        Command::Search { query } => cmd_search(&query, json, &opts),
     }
 }
 
@@ -177,11 +182,16 @@ fn cmd_readable(url: &str, json: bool, opts: &FetchOptions) -> anyhow::Result<()
     Ok(())
 }
 
-fn cmd_search(query: &str, json: bool) -> anyhow::Result<()> {
+fn cmd_search(query: &str, json: bool, opts: &FetchOptions) -> anyhow::Result<()> {
     let url = "https://lite.duckduckgo.com/lite/";
-    let response = ureq::get(url)
+    let agent = build_agent(opts)?;
+    let ua = opts.user_agent.as_deref().unwrap_or(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15"
+    );
+    let response = agent
+        .get(url)
         .query("q", query)
-        .header("User-Agent", &webread::user_agent())
+        .header("User-Agent", ua)
         .call()?;
     let html = response.into_body().read_to_string()?;
     let doc = scraper::Html::parse_document(&html);
