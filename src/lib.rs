@@ -798,23 +798,41 @@ pub fn generate_summary(html: &str) -> String {
                 .filter(|t| !t.is_empty())
         });
 
-    // Extract first ~200 chars of body text as preview
-    let body = Selector::parse("body")
-        .ok()
-        .and_then(|s| doc.select(&s).next())
-        .map(|e| collect_text(e, &[]))
-        .unwrap_or_default();
-
-    let preview = normalize_space(&body);
-    let preview = if preview.len() > 200 {
-        let mut truncated = preview[..200].to_string();
-        if let Some(last_space) = truncated.rfind(' ') {
-            truncated.truncate(last_space);
+    // Use extract_readable_content to find the real article text,
+    // then truncate to ~200 chars for the preview
+    let preview = match extract_readable_content(html) {
+        Ok(text) => {
+            let cleaned = normalize_space(&text);
+            if cleaned.len() > 200 {
+                let mut truncated = cleaned[..200].to_string();
+                if let Some(last_space) = truncated.rfind(' ') {
+                    truncated.truncate(last_space);
+                }
+                truncated.push_str("...");
+                truncated
+            } else {
+                cleaned
+            }
         }
-        truncated.push_str("...");
-        truncated
-    } else {
-        preview
+        Err(_) => {
+            // Fallback: body with tag stripping
+            let body = Selector::parse("body")
+                .ok()
+                .and_then(|s| doc.select(&s).next())
+                .map(|e| collect_text(e, STRIP_TAGS))
+                .unwrap_or_default();
+            let cleaned = normalize_space(&body);
+            if cleaned.len() > 200 {
+                let mut truncated = cleaned[..200].to_string();
+                if let Some(last_space) = truncated.rfind(' ') {
+                    truncated.truncate(last_space);
+                }
+                truncated.push_str("...");
+                truncated
+            } else {
+                cleaned
+            }
+        }
     };
 
     match title {
