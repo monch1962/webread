@@ -244,6 +244,46 @@ pub struct FetchResult {
     pub retry_after: Option<u64>,
 }
 
+/// Result of generating a page summary with metadata for agentic use.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SummaryResult {
+    /// Page title (from h1 or title tag).
+    pub title: String,
+    /// First ~200 chars of readable content.
+    pub preview: String,
+    /// Section headings (h2, h3) found in the page, comma-separated, max 8.
+    pub sections: Vec<String>,
+    /// Total number of links on the page.
+    pub link_count: usize,
+    /// Total characters of readable content.
+    pub total_chars: usize,
+}
+
+impl SummaryResult {
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "title": self.title,
+            "preview": self.preview,
+            "sections": self.sections,
+            "link_count": self.link_count,
+            "total_chars": self.total_chars,
+        })
+    }
+}
+
+impl std::fmt::Display for SummaryResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} — {}", self.title, self.preview)?;
+        if !self.sections.is_empty() {
+            write!(f, "
+
+Sections: {}", self.sections.join(", "))?;
+        }
+        write!(f, "
+Links: {} pages • {} chars", self.link_count, self.total_chars)
+    }
+}
+
 /// Fetch a URL with default options (convenience wrapper).
 pub fn fetch_url(url: &str) -> anyhow::Result<String> {
     let result = fetch_url_with(url, &FetchOptions::default())?;
@@ -781,7 +821,7 @@ pub fn html_to_text_with_options(html: &str, compact: bool) -> String {
 /// Extracts the title (from <h1> or <title>) and the first meaningful
 /// sentence or two of body text. Suitable for agentic pre-scanning
 /// where full extraction would waste tokens.
-pub fn generate_summary(html: &str) -> String {
+pub fn generate_summary(html: &str) -> SummaryResult {
     let doc = Html::parse_document(html);
 
     // Extract title: check <h1> first, then <title>
@@ -796,50 +836,51 @@ pub fn generate_summary(html: &str) -> String {
                 .and_then(|s| doc.select(&s).next())
                 .map(|e| e.text().collect::<Vec<_>>().join(" ").trim().to_string())
                 .filter(|t| !t.is_empty())
-        });
+        })
+        .unwrap_or_default();
 
-    // Use extract_readable_content to find the real article text,
-    // then truncate to ~200 chars for the preview
-    let preview = match extract_readable_content(html) {
-        Ok(text) => {
-            let cleaned = normalize_space(&text);
-            if cleaned.len() > 200 {
-                let mut truncated = cleaned[..200].to_string();
-                if let Some(last_space) = truncated.rfind(' ') {
-                    truncated.truncate(last_space);
-                }
-                truncated.push_str("...");
-                truncated
-            } else {
-                cleaned
-            }
+    // Extract readable content for the preview
+    let readable = extract_readable_content(html).unwrap_or_default();
+    let total_chars = readable.len();
+    let cleaned = normalize_space(&readable);
+
+    // Truncate preview to ~200 chars
+    let preview = if cleaned.len() > 200 {
+        let mut truncated = cleaned[..200].to_string();
+        if let Some(last_space) = truncated.rfind(' ') {
+            truncated.truncate(last_space);
         }
-        Err(_) => {
-            // Fallback: body with tag stripping
-            let body = Selector::parse("body")
-                .ok()
-                .and_then(|s| doc.select(&s).next())
-                .map(|e| collect_text(e, STRIP_TAGS))
-                .unwrap_or_default();
-            let cleaned = normalize_space(&body);
-            if cleaned.len() > 200 {
-                let mut truncated = cleaned[..200].to_string();
-                if let Some(last_space) = truncated.rfind(' ') {
-                    truncated.truncate(last_space);
-                }
-                truncated.push_str("...");
-                truncated
-            } else {
-                cleaned
-            }
-        }
+        truncated.push_str("...");
+        truncated
+    } else {
+        cleaned
     };
 
-    match title {
-        Some(t) if !t.is_empty() => {
-            format!("{t} — {preview}")
+    // Extract up to 8 section headings (h2, h3)
+    let mut sections: Vec<String> = Vec::new();
+    for tag in &["h2", "h3"] {
+        if let Ok(sel) = Selector::parse(tag) {
+            for el in doc.select(&sel) {
+                let heading: String = el.text().collect::<Vec<_>>().join(" ").trim().to_string();
+                if !heading.is_empty() && sections.len() < 8 {
+                    sections.push(heading);
+                }
+            }
         }
-        _ => preview,
+    }
+
+    // Count links
+    let link_count = Selector::parse("a")
+        .ok()
+        .map(|sel| doc.select(&sel).count())
+        .unwrap_or(0);
+
+    SummaryResult {
+        title,
+        preview,
+        sections,
+        link_count,
+        total_chars,
     }
 }
 
@@ -990,37 +1031,43 @@ mod tests {
 
     #[test] fn test_generate_summary_with_title() {
         let html = "<html><head><title>Test Page</title></head><body><h1>Main Title</h1><p>This is the first paragraph of content that should appear in the summary preview for the agent to read and understand.</p></body></html>";
-        let summary = generate_summary(&html);
-        assert!(summary.contains("Main Title"), "summary should contain h1 title");
-        assert!(summary.contains("first paragraph"), "summary should contain body text");
-        assert!(summary.len() < 300, "summary should be compact");
+        let s = generate_summary(&html);
+        assert_eq!(s.title, "Main Title", "should extract h1 title");
+        assert!(s.preview.contains("first paragraph"), "summary should contain body text");
+        assert!(s.preview.len() < 300, "preview should be compact");
+        assert!(s.total_chars > 0, "should report total chars");
     }
 
     #[test] fn test_generate_summary_fallback_to_title_tag() {
         let html = "<html><head><title>Page Title Only</title></head><body><p>Some body text here for the summary preview.</p></body></html>";
-        let summary = generate_summary(&html);
-        assert!(summary.contains("Page Title Only"), "summary should fall back to <title>");
-        assert!(summary.contains("body text"), "summary should contain body");
+        let s = generate_summary(&html);
+        assert_eq!(s.title, "Page Title Only", "should fall back to <title>");
+        assert!(s.preview.contains("body text"), "summary should contain body");
     }
 
     #[test] fn test_generate_summary_truncates_long_content() {
         let body_text = "A short intro. ".to_owned() + &"word ".repeat(500);
         let html = format!("<html><body><h1>Long Page</h1><p>{}</p></body></html>", body_text);
-        let summary = generate_summary(&html);
-        assert!(summary.contains("Long Page"), "summary should have title");
-        assert!(summary.ends_with("..."), "long content should be truncated");
-        assert!(summary.len() < 500, "truncated summary should be compact");
+        let s = generate_summary(&html);
+        assert_eq!(s.title, "Long Page", "summary should have title");
+        assert!(s.preview.ends_with("..."), "long content should be truncated");
+        assert!(s.preview.len() < 500, "truncated preview should be compact");
+        assert!(s.total_chars > 2000, "should report actual total chars");
     }
 
     #[test] fn test_generate_summary_no_title() {
         let html = "<html><body><p>Just some text without any title element at all here.</p></body></html>";
-        let summary = generate_summary(&html);
-        assert!(summary.contains("text without"), "summary should work without title");
+        let s = generate_summary(&html);
+        assert!(s.preview.contains("text without"), "summary should work without title");
+        assert!(s.link_count == 0, "should report 0 links");
     }
 
     #[test] fn test_generate_summary_empty() {
-        let summary = generate_summary("<html></html>");
-        assert!(summary.is_empty() || summary.trim().is_empty());
+        let s = generate_summary("<html></html>");
+        assert!(s.preview.is_empty(), "empty html should have empty preview");
+        assert!(s.title.is_empty(), "empty html should have empty title");
+        assert_eq!(s.sections.len(), 0, "empty html should have no sections");
+        assert_eq!(s.link_count, 0, "empty html should have no links");
     }
 
     #[test] fn test_fetch_options_summary_default() {

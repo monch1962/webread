@@ -161,6 +161,40 @@ fn test_devto_article() {
     );
 }
 
+// --- Summary mode tests ---
+
+#[test]
+fn test_summary_text_output() {
+    let out = webread(&["get", "https://example.com", "--summary"]).unwrap();
+    assert!(out.contains("Example Domain"), "summary should have title");
+    assert!(out.contains("Links:"), "summary should have link count");
+    assert!(out.contains("chars"), "summary should have char count");
+}
+
+#[test]
+fn test_summary_json_output() {
+    let out = webread(&["get", "https://example.com", "--summary", "--json"]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v.get("summary").is_some(), "summary json must have 'summary' flag");
+    assert_eq!(v["summary"], true, "summary flag must be true");
+    assert!(v.get("summary_data").is_some(), "summary json must have 'summary_data'");
+    let sd = &v["summary_data"];
+    assert!(sd.get("title").is_some(), "summary_data must have 'title'");
+    assert!(sd.get("preview").is_some(), "summary_data must have 'preview'");
+    assert!(sd.get("sections").is_some(), "summary_data must have 'sections'");
+    assert!(sd.get("link_count").is_some(), "summary_data must have 'link_count'");
+    assert!(sd.get("total_chars").is_some(), "summary_data must have 'total_chars'");
+    assert!(sd["link_count"].as_u64().unwrap_or(0) > 0, "should have at least 1 link");
+    assert!(sd["total_chars"].as_u64().unwrap_or(0) > 0, "should have positive total_chars");
+}
+
+#[test]
+fn test_summary_readable_output() {
+    let out = webread(&["readable", "https://example.com", "--summary"]).unwrap();
+    assert!(out.contains("Example Domain"), "readable --summary should have title");
+    assert!(out.contains("Links:"), "readable --summary should have link count");
+}
+
 // --- New feature integration tests ---
 
 #[test]

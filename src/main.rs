@@ -236,18 +236,16 @@ fn cmd_get(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Opti
     let (html, result) = fetch_with_opts(url, opts)?;
 
     if opts.summary {
-        let summary = generate_summary(&html);
+        let s = generate_summary(&html);
         if json {
             let mut extra = serde_json::json!({});
             add_metadata(&mut extra, &result, opts, url);
             let obj = extra.as_object_mut().unwrap();
-            let char_count = summary.len();
-            obj.insert("text".into(), serde_json::Value::String(summary));
-            obj.insert("char_count".into(), serde_json::Value::Number(serde_json::Number::from(char_count as u64)));
+            obj.insert("summary_data".into(), s.to_json());
             obj.insert("summary".into(), serde_json::Value::Bool(true));
             println!("{extra}");
         } else {
-            println!("{summary}");
+            println!("{s}");
         }
         return Ok(handle_truncated(&result, opts));
     }
@@ -373,18 +371,16 @@ fn cmd_readable(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32,
     let (html, result) = fetch_with_opts(url, opts)?;
 
     if opts.summary {
-        let summary = generate_summary(&html);
+        let s = generate_summary(&html);
         if json {
             let mut extra = serde_json::json!({});
             add_metadata(&mut extra, &result, opts, url);
             let obj = extra.as_object_mut().unwrap();
-            let char_count = summary.len();
-            obj.insert("text".into(), serde_json::Value::String(summary));
-            obj.insert("char_count".into(), serde_json::Value::Number(serde_json::Number::from(char_count as u64)));
+            obj.insert("summary_data".into(), s.to_json());
             obj.insert("summary".into(), serde_json::Value::Bool(true));
             println!("{extra}");
         } else {
-            println!("{summary}");
+            println!("{s}");
         }
         return Ok(handle_truncated(&result, opts));
     }
