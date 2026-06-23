@@ -206,6 +206,52 @@ fn test_outline_json_output() {
     assert!(od.get("link_count").is_some(), "outline_data must have 'link_count'");
 }
 
+// --- Help output agent-discovery tests ---
+// These verify that --help contains the decision-hierarchy language
+// an agent needs to self-discover the optimal flag ordering.
+
+#[test]
+fn test_help_lists_meta_as_cheapest() {
+    let out = webread(&["--help"]).unwrap();
+    assert!(
+        out.contains("Cheapest mode"),
+        "--help must describe --meta as 'Cheapest mode' so agents know to try it first"
+    );
+    assert!(
+        out.contains("Try this first"),
+        "--help must tell agents to 'Try this first' for --meta"
+    );
+}
+
+#[test]
+fn test_help_lists_outline_as_cheapest_after_meta() {
+    let out = webread(&["--help"]).unwrap();
+    assert!(
+        out.contains("Cheapest after --meta"),
+        "--help must describe --outline as 'Cheapest after --meta' so agents know the ordering"
+    );
+}
+
+#[test]
+fn test_help_includes_both_new_flags() {
+    let out = webread(&["--help"]).unwrap();
+    assert!(out.contains("--meta"), "--help must list --meta flag");
+    assert!(out.contains("--outline"), "--help must list --outline flag");
+    assert!(out.contains("--compact"), "--help must list --compact flag");
+    assert!(out.contains("--json"), "--help must list --json flag");
+}
+
+#[test]
+fn test_help_includes_all_subcommands() {
+    let out = webread(&["--help"]).unwrap();
+    assert!(out.contains("get"), "--help must list get subcommand");
+    assert!(out.contains("readable"), "--help must list readable subcommand");
+    assert!(out.contains("links"), "--help must list links subcommand");
+    assert!(out.contains("search"), "--help must list search subcommand");
+    assert!(out.contains("html"), "--help must list html subcommand");
+    assert!(out.contains("config-check"), "--help must list config-check subcommand");
+}
+
 // --- New feature integration tests ---
 
 #[test]

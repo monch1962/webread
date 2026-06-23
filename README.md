@@ -206,7 +206,7 @@ cargo clippy      # Zero warnings
 | Suite | Count | Covers |
 |-------|-------|--------|
 | Unit (lib) | 75 | URL decoding, text extraction, readability scoring, fetch errors, config parsing, URL resolution, content-type checks, retry logic, user-agent override, proxy config, agent building, compact mode, meta mode, outline mode, error codes (13 variants), config validation, HTTP method, link text, search snippets |
-| Integration | 31 | CLI smoke tests, JSON output structure, JSON metadata fields, compact mode, meta mode, outline mode, HEAD method, links with text, search snippets, cross-site (Wikipedia, GitHub, arXiv, HN, dev.to), parallel stress, URL list validation |
+| Integration | 39 | CLI smoke tests, JSON output structure, JSON metadata fields, compact mode, meta mode, outline mode, --help agent-discovery (4), HEAD method, links with text, search snippets, cross-site (Wikipedia, GitHub, arXiv, HN, dev.to), parallel stress, URL list validation |
 
 Cross-site integration tests validate against real websites with
 `std::thread::spawn` for concurrent execution to verify no shared-state
