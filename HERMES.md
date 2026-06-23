@@ -13,7 +13,7 @@ static binary.
 | RAM per call | 200-500 MB | **5-10 MB** |
 | Startup time | 1-5 seconds | **~5 ms** |
 | Dependencies | Chromium, display server, GPU libs | **None (static binary)** |
-| JSON output | Post-processing needed | **Native `--json` flag** |
+| JSON output | Post-processing needed | **Native `--json` flag + structured errors** |
 | Body size control | None | **`--max-size` flag** |
 | Timeout control | Configurable | **`--timeout` flag** |
 | Config file | Browser preferences | **`~/.config/webread/config`** |
@@ -140,7 +140,9 @@ Uses content scoring to find the main article body
 ### Structured data via JSON
 ```
 For machine-parseable output: webread get <url> --json
-Returns: {"url": "...", "text": "...", "char_count": N}
+Returns: {"url": "...", "text": "...", "char_count": N,
+  "final_url": "...", "status": 200, "truncated": false,
+  "max_size": 10485760}
 ```
 
 ### Search
@@ -161,6 +163,26 @@ For environments requiring an HTTP proxy:
   webread get <url> --proxy http://proxy.corp:8080
 webread also respects ALL_PROXY, HTTPS_PROXY, and HTTP_PROXY environment
 variables, as well as NO_PROXY for bypass rules.
+```
+
+### Agentic error handling (structured JSON errors)
+```
+Set WR_JSON_ERROR=1 to get machine-parseable error JSON on failure:
+  WR_JSON_ERROR=1 webread get <url> --json
+On error, prints: {"error": {"code": "TIMEOUT", "message": "...", "url": "..."}}
+
+Error codes: TIMEOUT, DNS_FAILURE, CONNECTION_REFUSED, HTTP_4XX, HTTP_5XX,
+CONTENT_TYPE_NOT_HTML, TRUNCATED, PROXY_ERROR, NETWORK_ERROR, INVALID_URL
+
+Exit codes: 0=ok, 2=truncated, 3=content-type, 4=network, 5=proxy,
+6=timeout, 7=http, 8=config/input error
+```
+
+### Token-efficient mode
+```
+For large pages, use --compact to compress whitespace aggressively:
+  webread get <url> --compact
+Reduces token count by ~10-30% on typical documentation pages.
 ```
 
 ### Extract specific elements
@@ -191,7 +213,7 @@ in milliseconds and uses minimal RAM.
 # Smoke test
 webread get https://example.com
 
-# Full test suite (66 tests)
+# Full test suite (77 tests)
 cd ~/Projects/webread && cargo test
 
 # Batch test across 302 websites (parallel, ~2 minutes)
