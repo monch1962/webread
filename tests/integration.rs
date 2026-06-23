@@ -64,7 +64,7 @@ fn test_links_json() {
     let out = webread(&["links", "https://example.com", "--json"]).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert!(parsed.get("links").is_some());
-    assert!(parsed["links"].as_array().unwrap().len() > 0);
+    assert!(!parsed["links"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -87,7 +87,7 @@ fn test_search_json() {
     let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert!(parsed.get("query").is_some());
     assert!(parsed.get("results").is_some());
-    assert!(parsed["results"].as_array().unwrap().len() > 0);
+    assert!(!parsed["results"].as_array().unwrap().is_empty());
 }
 
 // --- Error handling tests ---
@@ -302,7 +302,7 @@ fn test_links_with_text_json() {
     let out = webread(&["links", "https://example.com", "--json"]).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
     let links = parsed["links"].as_array().unwrap();
-    assert!(links.len() > 0, "should have at least one link");
+    assert!(!links.is_empty(), "should have at least one link");
     // Each link should have url and text fields
     for link in links {
         assert!(link.get("url").is_some(), "link should have 'url'");
@@ -472,7 +472,7 @@ fn test_section_on_all_test_urls() {
 
     let results = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|s| {
-        for chunk in urls.chunks((urls.len() + n_workers - 1) / n_workers) {
+        for chunk in urls.chunks(urls.len().div_ceil(n_workers)) {
             let owned = chunk.to_vec();
             let results = &results;
             s.spawn(move || {

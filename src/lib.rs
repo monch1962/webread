@@ -721,13 +721,13 @@ mod guardrail_tests {
     #[test] fn test_readable_single_paragraph_falls_back() {
         // A single short paragraph should fall through to body-level extraction
         let html = "<html><body><p>Hello world</p></body></html>";
-        let result = extract_readable_content(&html).unwrap();
+        let result = extract_readable_content(html).unwrap();
         assert_eq!(result, "Hello world");
     }
 
     #[test] fn test_readable_with_nested_divs() {
         let html = "<html><body><div><div><p>Nested content here</p></div></div></body></html>";
-        let result = extract_readable_content(&html).unwrap();
+        let result = extract_readable_content(html).unwrap();
         assert!(result.contains("Nested content"));
     }
 }
@@ -1014,7 +1014,7 @@ pub fn extract_section(html: &str, selector: &str) -> anyhow::Result<String> {
     // Determine start position: if heading is in a wrapper div/section/li,
     // walk siblings of the wrapper. Otherwise walk siblings of the heading itself.
     let wrapped = el.parent()
-        .and_then(|p| ElementRef::wrap(p))
+        .and_then(ElementRef::wrap)
         .map(|pe| {
             let n = pe.value().name();
             n == "div" || n == "section" || n == "li"
@@ -1190,7 +1190,7 @@ mod tests {
 <article><h1>Real Article</h1><p>This is the real content.</p></article>
 <aside>Sidebar</aside><footer>Footer</footer>
 </body></html>";
-        let text = extract_readable_content(&html).unwrap();
+        let text = extract_readable_content(html).unwrap();
         assert!(text.contains("Real Article")); assert!(!text.contains("Navigation"));
         assert!(!text.contains("Footer"));
     }
@@ -1227,7 +1227,7 @@ for the reader to extract and learn from this blog post content.</p>
 scoring algorithm selects this div over the fallback body text extraction.</p>
 </div>
 </body></html>";
-        let text = extract_readable_content(&html).unwrap();
+        let text = extract_readable_content(html).unwrap();
         assert!(text.contains("My Blog Post Title Here"), "should contain title");
         assert!(!text.contains("Sidebar"), "should NOT contain sidebar text");
     }
@@ -1243,7 +1243,7 @@ scoring algorithm selects this div over the fallback body text extraction.</p>
 <p>Fourth paragraph conclusion.</p>
 </div>
 </body></html>";
-        let text = extract_readable_content(&html).unwrap();
+        let text = extract_readable_content(html).unwrap();
         assert!(text.contains("Real article content"));
         assert!(text.len() > 80);
     }
@@ -1263,7 +1263,7 @@ scoring algorithm selects this div over the fallback body text extraction.</p>
 <aside><h2>Related Articles</h2></aside>
 <footer>Copyright 2026</footer>
 </body></html>";
-        let text = extract_readable_content(&html).unwrap();
+        let text = extract_readable_content(html).unwrap();
         assert!(text.contains("quantum computing")); assert!(text.contains("transformative moment"));
         assert!(!text.contains("Related Articles")); assert!(!text.contains("Share on Twitter"));
     }
