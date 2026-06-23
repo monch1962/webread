@@ -453,6 +453,75 @@ fn test_batch_url_list_valid() {
 
 // --- Parallel execution stress tests ---
 
+fn read_test_urls() -> Vec<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test_urls.txt");
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    content
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty() && l.starts_with("http"))
+        .collect()
+}
+
+#[test]
+fn test_section_on_all_test_urls() {
+    let urls = read_test_urls();
+    assert!(!urls.is_empty(), "test_urls.txt must contain at least one URL");
+    let n_workers = 12usize;
+    eprintln!("section test: {} URLs ({n_workers} workers)", urls.len());
+
+    let results = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|s| {
+        for chunk in urls.chunks((urls.len() + n_workers - 1) / n_workers) {
+            let owned = chunk.to_vec();
+            let results = &results;
+            s.spawn(move || {
+                for url in &owned {
+                    let result = (|| -> Result<String, String> {
+                        let outline = webread(&["get", url, "--outline"])?;
+                        for tag in &["h1", "h2", "h3"] {
+                            if outline.contains(tag) {
+                                let section_args = &["get", url, "--section", tag, "--timeout", "15"];
+                                let text = webread(section_args)?;
+                                let trimmed = text.trim().to_string();
+                                if !trimmed.is_empty() {
+                                    return Ok(format!("{tag}:{len}", len = trimmed.len()));
+                                }
+                            }
+                        }
+                        Err("no heading found in outline".into())
+                    })();
+                    let entry = (url.clone(), result);
+                    results.lock().unwrap().push(entry);
+                }
+            });
+        }
+    });
+
+    let results = results.into_inner().unwrap();
+    let succeeded = results.iter().filter(|(_, r)| r.is_ok()).count();
+    let failed: Vec<_> = results.iter().filter(|(_, r)| r.is_err()).collect();
+
+    eprintln!("section results: {succeeded} ok, {} failed", failed.len());
+
+    let max_report = 10;
+    for (_i, (url, err)) in failed.iter().enumerate().take(max_report) {
+        let msg = err.as_ref().unwrap_err();
+        eprintln!("  FAIL [{url}]: {msg}");
+    }
+    if failed.len() > max_report {
+        eprintln!("  ... and {} more failures", failed.len() - max_report);
+    }
+
+    let tested = results.len();
+    let rate = if tested > 0 { succeeded as f64 / tested as f64 } else { 0.0 };
+    assert!(
+        rate >= 0.80,
+        "section extraction success rate too low: {:.1}% ({succeeded}/{tested})",
+        rate * 100.0
+    );
+}
+
 #[test]
 fn test_fetch_multiple_urls() {
     // Race several independent URLs to verify no shared-state corruption
