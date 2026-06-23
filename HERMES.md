@@ -85,39 +85,46 @@ export PATH="$HOME/Projects/webread/target/release:$PATH"
 
 ## Configuring as a Hermes Tool
 
-Add a custom tool definition in Hermes' configuration to make webread
-available to agents. In `~/.hermes/config.yaml`:
+Add custom tool definitions in Hermes' configuration to make webread
+available to agents. The descriptions are what the agent reads to decide
+which tool to call — they should encode the decision hierarchy.
+
+In `~/.hermes/config.yaml`:
 
 ```yaml
 tools:
-  webread:
-    command: webread
+  webread_meta:
+    command: webread get {{url}} --meta --json
     description: >
-      Fetch and extract web content without a browser.
-      Supports: get (clean text), readable (article mode),
-      html (raw + CSS selector), links (href enumeration),
-      search (DuckDuckGo). All support --json flag.
-```
-
-Or as individual tools for finer-grained control:
-
-```yaml
-tools:
+      Cheapest extraction (~10 tokens, 99% savings).
+      Returns structured metadata: title, description, canonical URL,
+      Open Graph tags, Twitter Card, charset, language, JSON-LD.
+      Use this FIRST before any other webread tool to identify the page.
+  webread_outline:
+    command: webread get {{url}} --outline --json
+    description: >
+      Second-cheapest extraction (~20 tokens, 98% savings).
+      Returns page heading hierarchy (h1-h6 tree).
+      Use this after meta to understand page structure.
   webread_get:
     command: webread get {{url}}
-    description: Fetch a URL and return clean text.
+    description: >
+      Full text extraction. Expensive — falls to ~50% with --compact.
+      Only call this after meta and outline when you need body text.
   webread_readable:
     command: webread readable {{url}}
-    description: Extract article content from a URL (scoring-based readability).
+    description: >
+      Article-mode extraction (scoring-based readability, strips nav/footer/ads).
+      More expensive than get --compact. Use for long-form articles only.
   webread_search:
     command: webread search {{query}} --json
-    description: Search the web and return JSON results.
+    description: Search the web and return JSON results with snippets.
   webread_links:
     command: webread links {{url}}
     description: Enumerate all links on a page (resolved to absolute URLs).
   webread_html:
     command: webread html {{url}} --selector {{selector}}
-    description: Fetch HTML filtered by CSS selector.
+    description: Fetch raw HTML filtered by CSS selector. Use for targeted extraction.
 ```
 
 ## Usage Examples for Prompts

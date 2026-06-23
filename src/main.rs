@@ -32,11 +32,11 @@ struct Cli {
     #[arg(long, global = true)]
     compact: bool,
 
-    /// Page outline mode: emit heading hierarchy (h1-h6) only (saves ~98% tokens)
+    /// Page outline mode: emit heading hierarchy (h1-h6) only. Cheapest after --meta. Saves ~98% tokens.
     #[arg(long, global = true)]
     outline: bool,
 
-    /// Page metadata mode: emit structured meta tags only (saves ~99% tokens)
+    /// Cheapest mode: emit structured meta tags only (title, description, OG, canonical, language, etc). Saves ~99% tokens. Try this first.
     #[arg(long, global = true)]
     meta: bool,
 
