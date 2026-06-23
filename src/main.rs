@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::process;
 use webread::*;
 
 #[derive(Parser)]
@@ -27,6 +28,18 @@ struct Cli {
     #[arg(long, global = true)]
     proxy: Option<String>,
 
+    /// Token-efficient output: aggressive whitespace compression, skip low-value content
+    #[arg(long, global = true)]
+    compact: bool,
+
+    /// HTTP method: GET (default), POST, HEAD
+    #[arg(long, global = true, default_value = "GET")]
+    method: String,
+
+    /// POST body data (required if --method POST)
+    #[arg(long, global = true)]
+    post_data: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -41,18 +54,19 @@ enum Command {
         #[arg(long)]
         selector: Option<String>,
     },
-    /// Enumerate all hrefs on a page
+    /// Enumerate all hrefs on a page (with link text)
     Links { url: String },
     /// Article extraction (readability mode)
     Readable { url: String },
     /// Search the web
     Search { query: String },
+    /// Validate the config file and report errors
+    ConfigCheck,
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> ! {
     let cli = Cli::parse();
 
-    // Load config file for defaults, CLI flags override
     let cfg = load_config();
     let timeout = cli.timeout;
     let max_size = cli.max_size;
@@ -63,50 +77,168 @@ fn main() -> anyhow::Result<()> {
         .proxy
         .or_else(|| cfg.get("proxy").cloned());
 
+    // Parse HTTP method
+    let method = match cli.method.to_uppercase().as_str() {
+        "GET" => HttpMethod::Get,
+        "POST" => HttpMethod::Post,
+        "HEAD" => HttpMethod::Head,
+        other => {
+            let err = ErrorCode::ConfigError(format!("Invalid HTTP method '{other}'. Use GET, POST, or HEAD."));
+            print_error_json(&err, None);
+            process::exit(err.exit_code());
+        }
+    };
+
+    // Validate POST requires post-data
+    if method == HttpMethod::Post && cli.post_data.is_none() {
+        let err = ErrorCode::ConfigError("--post-data is required when --method POST".into());
+        print_error_json(&err, None);
+        process::exit(err.exit_code());
+    }
+
     let json = cli.json;
+    let compact = cli.compact;
     let opts = FetchOptions {
         timeout_secs: timeout,
         max_body_bytes: max_size,
         proxy_url: proxy,
         user_agent,
+        method,
+        compact,
+        post_body: cli.post_data,
         ..FetchOptions::default()
     };
 
-    match cli.command {
+    // Handle config-check early — no fetch needed
+    if matches!(cli.command, Command::ConfigCheck) {
+        let result = cmd_config_check(&cfg);
+        process::exit(result);
+    }
+
+    let result = match cli.command {
         Command::Get { url } => cmd_get(&url, json, &opts),
         Command::Html { url, selector } => cmd_html(&url, selector.as_deref(), json, &opts),
         Command::Links { url } => cmd_links(&url, json, &opts),
         Command::Readable { url } => cmd_readable(&url, json, &opts),
         Command::Search { query } => cmd_search(&query, json, &opts),
+        Command::ConfigCheck => unreachable!(),
+    };
+
+    match result {
+        Ok(exit) => process::exit(exit),
+        Err((exit, error_opt)) => {
+            if let Some(err) = error_opt {
+                print_error_json(&err, None);
+            }
+            process::exit(exit);
+        }
     }
 }
 
-fn fetch_with_opts(url: &str, opts: &FetchOptions) -> anyhow::Result<String> {
-    let result = fetch_url_with(url, opts)?;
-    Ok(result.body)
+/// Print a structured error as JSON. Always goes to stdout for agent parsing.
+pub fn print_error_json(err: &ErrorCode, url: Option<&str>) {
+    if std::env::var("WR_JSON_ERROR").is_ok() || url.is_some() {
+        println!("{}", serde_json::to_string(&err.to_json(url)).unwrap_or_default());
+    }
 }
 
-fn print_text(text: &str, json: bool, extra: Option<serde_json::Value>) {
+fn fetch_with_opts(url: &str, opts: &FetchOptions) -> Result<(String, FetchResult), (i32, Option<ErrorCode>)> {
+    match fetch_url_with(url, opts) {
+        Ok(result) => Ok((result.body.clone(), result)),
+        Err(e) => {
+            // Try to classify the error
+            let msg = format!("{e:#}");
+            let err_code = if msg.contains("timed out") || msg.contains("timeout") {
+                Some(ErrorCode::Timeout)
+            } else if msg.contains("Content-Type") {
+                Some(ErrorCode::ContentTypeNotHtml(msg))
+            } else if msg.contains("proxy") || msg.contains("Proxy") {
+                Some(ErrorCode::ProxyError(msg))
+            } else if msg.contains("503") || msg.contains("502") {
+                Some(ErrorCode::Http5xx(0))
+            } else {
+                Some(ErrorCode::NetworkError(msg))
+            };
+            let exit = err_code.as_ref().map(|e| e.exit_code()).unwrap_or(1);
+            Err((exit, err_code))
+        }
+    }
+}
+
+fn cmd_config_check(cfg: &std::collections::HashMap<String, String>) -> i32 {
+    let path = dirs_config_path().join("webread").join("config");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("Config file not found at: {}", path.display());
+            eprintln!("Create with: mkdir -p ~/.config/webread && echo 'timeout=15' > ~/.config/webread/config");
+            return 0; // Not an error — file is optional
+        }
+    };
+
+    let errors = validate_config(&content);
+    if errors.is_empty() {
+        println!("Config file at {} is valid", path.display());
+        println!();
+        println!("Current settings:");
+        for (key, value) in cfg {
+            println!("  {key} = {value}");
+        }
+        0
+    } else {
+        eprintln!("Config file at {} has {} issue(s):", path.display(), errors.len());
+        for (key, msg) in &errors {
+            eprintln!("  [{key}] {msg}");
+        }
+        1
+    }
+}
+
+
+
+fn add_metadata(extra: &mut serde_json::Value, result: &FetchResult, opts: &FetchOptions, url: &str) {
+    let obj = extra.as_object_mut().unwrap();
+    obj.insert("url".into(), serde_json::Value::String(url.to_string()));
+    obj.insert("final_url".into(), serde_json::Value::String(result.final_url.clone()));
+    obj.insert("status".into(), serde_json::Value::Number(serde_json::Number::from(result.status)));
+    obj.insert("max_size".into(), serde_json::Value::Number(serde_json::Number::from(opts.max_body_bytes as u64)));
+    obj.insert("truncated".into(), serde_json::Value::Bool(result.truncated));
+    if let Some(ref ct) = result.content_type {
+        obj.insert("content_type".into(), serde_json::Value::String(ct.clone()));
+    }
+    if let Some(ra) = result.retry_after {
+        obj.insert("retry_after".into(), serde_json::Value::Number(serde_json::Number::from(ra)));
+    }
+    obj.insert("timed_out".into(), serde_json::Value::Bool(false));
+    obj.insert("error".into(), serde_json::Value::Null);
+}
+
+fn cmd_get(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Option<ErrorCode>)> {
+    let (html, result) = fetch_with_opts(url, opts)?;
+    let text = if opts.compact {
+        html_to_text_with_options(&html, true)
+    } else {
+        html_to_text(&html)
+    };
+
     if json {
-        let mut output = extra.unwrap_or(serde_json::json!({}));
-        let obj = output.as_object_mut().unwrap();
-        obj.insert("text".into(), serde_json::Value::String(text.to_string()));
-        obj.insert(
-            "char_count".into(),
-            serde_json::Value::Number(serde_json::Number::from(text.len() as u64)),
-        );
-        println!("{output}");
+        let mut extra = serde_json::json!({});
+        add_metadata(&mut extra, &result, opts, url);
+        let obj = extra.as_object_mut().unwrap();
+        let char_count = text.len();
+        obj.insert("text".into(), serde_json::Value::String(text));
+        obj.insert("char_count".into(), serde_json::Value::Number(serde_json::Number::from(char_count as u64)));
+        println!("{extra}");
     } else {
         println!("{text}");
     }
-}
 
-fn cmd_get(url: &str, json: bool, opts: &FetchOptions) -> anyhow::Result<()> {
-    let html = fetch_with_opts(url, opts)?;
-    let text = html_to_text(&html);
-    let extra = serde_json::json!({ "url": url });
-    print_text(&text, json, Some(extra));
-    Ok(())
+    if result.truncated {
+        eprintln!("[truncated] Response exceeded --max-size ({} bytes). Use --max-size 0 for unlimited.", opts.max_body_bytes);
+        Ok(ErrorCode::Truncated.exit_code())
+    } else {
+        Ok(0)
+    }
 }
 
 fn cmd_html(
@@ -114,8 +246,8 @@ fn cmd_html(
     selector: Option<&str>,
     json: bool,
     opts: &FetchOptions,
-) -> anyhow::Result<()> {
-    let html = fetch_with_opts(url, opts)?;
+) -> Result<i32, (i32, Option<ErrorCode>)> {
+    let (html, result) = fetch_with_opts(url, opts)?;
     let doc = scraper::Html::parse_document(&html);
 
     if json {
@@ -128,17 +260,27 @@ fn cmd_html(
         } else {
             vec![html.to_string()]
         };
-        let output = serde_json::json!({
+        let mut extra = serde_json::json!({
             "url": url,
+            "final_url": result.final_url,
+            "status": result.status,
             "selector": selector,
             "html": selected.join("\n"),
             "match_count": selected.len(),
+            "max_size": opts.max_body_bytes,
+            "truncated": result.truncated,
         });
-        println!("{output}");
+        if let Some(ref ct) = result.content_type {
+            extra["content_type"] = serde_json::Value::String(ct.clone());
+        }
+        println!("{extra}");
     } else {
         if let Some(sel_str) = selector {
             let sel = scraper::Selector::parse(sel_str)
-                .map_err(|e| anyhow::anyhow!("Invalid CSS selector '{sel_str}': {e}"))?;
+                .map_err(|e| {
+                    let err = ErrorCode::InvalidSelector(format!("Invalid CSS selector '{sel_str}': {e}"));
+                    (err.exit_code(), Some(err))
+                })?;
             for element in doc.select(&sel) {
                 println!("{}", element.html());
             }
@@ -146,70 +288,149 @@ fn cmd_html(
             println!("{html}");
         }
     }
-    Ok(())
+
+    if result.truncated {
+        eprintln!("[truncated] Response exceeded --max-size ({} bytes).", opts.max_body_bytes);
+        Ok(ErrorCode::Truncated.exit_code())
+    } else {
+        Ok(0)
+    }
 }
 
-fn cmd_links(url: &str, json: bool, opts: &FetchOptions) -> anyhow::Result<()> {
-    let html = fetch_with_opts(url, opts)?;
+fn cmd_links(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Option<ErrorCode>)> {
+    let (html, result) = fetch_with_opts(url, opts)?;
     let doc = scraper::Html::parse_document(&html);
     let sel = scraper::Selector::parse("a").unwrap();
-    let links: Vec<String> = doc
+    let links: Vec<serde_json::Value> = doc
         .select(&sel)
-        .filter_map(|e| e.value().attr("href"))
-        .map(|h| resolve_url(url, h))
+        .filter_map(|e| {
+            let href = e.value().attr("href")?;
+            let text: String = e.text().collect::<Vec<_>>().join(" ").trim().to_string();
+            Some(serde_json::json!({
+                "url": resolve_url(url, href),
+                "text": if text.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(text) },
+            }))
+        })
         .collect();
 
     if json {
-        let output = serde_json::json!({
+        let mut extra = serde_json::json!({
             "url": url,
+            "final_url": result.final_url,
+            "status": result.status,
             "links": links,
             "total": links.len(),
+            "max_size": opts.max_body_bytes,
+            "truncated": result.truncated,
         });
-        println!("{output}");
+        if let Some(ref ct) = result.content_type {
+            extra["content_type"] = serde_json::Value::String(ct.clone());
+        }
+        println!("{extra}");
     } else {
-        for href in &links {
-            println!("{href}");
+        for link in &links {
+            let url_str = link["url"].as_str().unwrap_or("");
+            let text_str = link["text"].as_str().unwrap_or("");
+            if text_str.is_empty() {
+                println!("{url_str}");
+            } else {
+                println!("{text_str} -> {url_str}");
+            }
         }
     }
-    Ok(())
+
+    if result.truncated {
+        eprintln!("[truncated] Response exceeded --max-size ({} bytes).", opts.max_body_bytes);
+        Ok(ErrorCode::Truncated.exit_code())
+    } else {
+        Ok(0)
+    }
 }
 
-fn cmd_readable(url: &str, json: bool, opts: &FetchOptions) -> anyhow::Result<()> {
-    let html = fetch_with_opts(url, opts)?;
-    let text = extract_readable_content(&html)?;
-    let extra = serde_json::json!({ "url": url });
-    print_text(&text, json, Some(extra));
-    Ok(())
+fn cmd_readable(url: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Option<ErrorCode>)> {
+    let (html, result) = fetch_with_opts(url, opts)?;
+    let text = extract_readable_content(&html).map_err(|e| {
+        let err = ErrorCode::NetworkError(format!("Failed to extract readable content: {e}"));
+        (err.exit_code(), Some(err))
+    })?;
+
+    if json {
+        let mut extra = serde_json::json!({});
+        add_metadata(&mut extra, &result, opts, url);
+        let obj = extra.as_object_mut().unwrap();
+        let char_count = text.len();
+        obj.insert("text".into(), serde_json::Value::String(text));
+        obj.insert("char_count".into(), serde_json::Value::Number(serde_json::Number::from(char_count as u64)));
+        println!("{extra}");
+    } else {
+        println!("{text}");
+    }
+
+    if result.truncated {
+        eprintln!("[truncated] Response exceeded --max-size ({} bytes).", opts.max_body_bytes);
+        Ok(ErrorCode::Truncated.exit_code())
+    } else {
+        Ok(0)
+    }
 }
 
-fn cmd_search(query: &str, json: bool, opts: &FetchOptions) -> anyhow::Result<()> {
+fn cmd_search(query: &str, json: bool, opts: &FetchOptions) -> Result<i32, (i32, Option<ErrorCode>)> {
     let url = "https://lite.duckduckgo.com/lite/";
-    let agent = build_agent(opts)?;
+    let agent = build_agent(opts).map_err(|e| {
+        let err = ErrorCode::ProxyError(format!("{e}"));
+        (err.exit_code(), Some(err))
+    })?;
     let ua = opts.user_agent.as_deref().unwrap_or(
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15"
     );
-    let response = agent
+    let response = match agent
         .get(url)
         .query("q", query)
         .header("User-Agent", ua)
-        .call()?;
-    let html = response.into_body().read_to_string()?;
+        .call()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let err_code = classify_error(&e, url);
+            return Err((err_code.exit_code(), Some(err_code)));
+        }
+    };
+    let html = match response.into_body().read_to_string() {
+        Ok(s) => s,
+        Err(e) => {
+            let err = ErrorCode::NetworkError(format!("Failed to read search response: {e}"));
+            return Err((err.exit_code(), Some(err)));
+        }
+    };
     let doc = scraper::Html::parse_document(&html);
 
+    // Extract search results with titles, URLs, and snippets
     let link_sel = scraper::Selector::parse("a.result-link").unwrap();
+    let snippet_sel = scraper::Selector::parse(".result-snippet").unwrap();
+    let snippets: Vec<String> = doc
+        .select(&snippet_sel)
+        .map(|s| s.text().collect::<Vec<_>>().join(" ").trim().to_string())
+        .collect();
+
     let results: Vec<serde_json::Value> = doc
         .select(&link_sel)
-        .filter_map(|link| {
+        .enumerate()
+        .filter_map(|(i, link)| {
             let href = link.value().attr("href")?;
             let clean_url = decode_search_url(href).unwrap_or_else(|_| href.to_string());
             let title: String = link.text().collect::<Vec<_>>().join(" ").trim().to_string();
             if title.is_empty() {
                 return None;
             }
-            Some(serde_json::json!({
+            let snippet = snippets.get(i).cloned().unwrap_or_default();
+            let mut obj = serde_json::json!({
                 "title": title,
                 "url": clean_url,
-            }))
+            });
+            if !snippet.is_empty() {
+                obj["snippet"] = serde_json::Value::String(snippet);
+            }
+            Some(obj)
         })
         .collect();
 
@@ -227,8 +448,13 @@ fn cmd_search(query: &str, json: bool, opts: &FetchOptions) -> anyhow::Result<()
             let url = result["url"].as_str().unwrap_or("");
             println!("{}. {title}", i + 1);
             println!("   {url}");
+            if let Some(snippet) = result.get("snippet").and_then(|s| s.as_str()) {
+                if !snippet.is_empty() {
+                    println!("   {snippet}");
+                }
+            }
             println!();
         }
     }
-    Ok(())
+    Ok(0)
 }

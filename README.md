@@ -8,9 +8,10 @@ No browser engine, no JavaScript runtime, no display server.
 ```
 webread get <url>                        # Fetch URL, print clean text
 webread search <query>                   # Search web, print text results
-webread links <url>                      # Enumerate all hrefs on a page
+webread links <url>                      # Enumerate all hrefs on a page (with link text)
 webread readable <url>                   # Article extraction (readability mode)
 webread html <url> [--selector 'css']    # Raw HTML with optional CSS filter
+webread config-check                     # Validate config file
 ```
 
 All commands support `--json` for structured output.
@@ -106,6 +107,9 @@ All commands support these safety flags for resource-constrained systems:
 | `--max-size <bytes>` | 10 MB | Truncates oversized responses (prevents OOM) |
 | `--user-agent <string>` | Safari UA | Override the User-Agent header |
 | `--proxy <url>` | env vars | HTTP proxy (e.g. `http://proxy:8080`). Falls back to `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY` env |
+| `--method <method>` | GET | HTTP method: `GET`, `POST`, `HEAD` |
+| `--post-data <body>` | — | Body data for POST requests |
+| `--compact` | off | Token-efficient output (aggressive whitespace compression) |
 | `--json` | off | Machine-parseable structured output |
 
 Plus built-in:
@@ -141,13 +145,13 @@ Comments (`#`) and blank lines are ignored. CLI flags override config file value
 ## Test Suite
 
 ```
-cargo test        # 71 tests (46 unit + 25 integration, parallel by default)
+cargo test        # 77 tests (52 unit + 25 integration, parallel by default)
 cargo clippy      # Zero warnings
 ```
 
 | Suite | Count | Covers |
 |-------|-------|--------|
-| Unit (lib) | 46 | URL decoding, text extraction, readability scoring, fetch errors, config parsing, URL resolution, content-type checks, retry logic, user-agent override, proxy config, agent building |
+| Unit (lib) | 52 | URL decoding, text extraction, readability scoring, fetch errors, config parsing, URL resolution, content-type checks, retry logic, user-agent override, proxy config, agent building, compact mode, error codes, config validation |
 | Integration | 25 | CLI smoke tests, JSON output structure, cross-site (Wikipedia, GitHub, arXiv, HN, dev.to), parallel stress, URL list validation |
 
 Cross-site integration tests validate against real websites with
